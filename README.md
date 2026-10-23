@@ -12,14 +12,13 @@
 
 ## 第一次使用
 
-1. 在 Colab 的“密钥”面板添加 `GITHUB_TOKEN`。它只需要读取私有仓库
-   `SydneyMCDonaldbigking/comfyui_quick_workflow` 的权限。
+1. 私有源包已经预置在 `runtime-cache/private-source-main.zip`，第一次运行不需要 GitHub Token。
 2. 把 Colab 运行时切换到 GPU；完整双阶段流程建议至少约 24GB 显存。
 3. 按顺序运行 Notebook。首次运行会下载约 43GB 模型到 Drive，因此时间较长。
 4. 以后启动会复用 Drive 中的模型、私有源包和 pip 下载缓存。
 
-如果以后不想继续使用 GitHub Token，可以在第一次成功后删除 Colab Secret；启动器会复用
-`runtime-cache/private-source-main.zip`。只有需要同步私有仓库的新版本时才重新添加 Token。
+只有以后需要从私有仓库同步新版本时，才在 Colab“密钥”面板临时添加
+`GITHUB_TOKEN`；它只需要读取 `SydneyMCDonaldbigking/comfyui_quick_workflow` 的权限。
 
 ## 存储布局
 
