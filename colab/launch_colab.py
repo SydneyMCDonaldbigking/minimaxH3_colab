@@ -39,7 +39,7 @@ def main() -> int:
     logs = drive / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    env["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     env["H3_CONFIG"] = str(config)
     env["PYTHONUNBUFFERED"] = "1"
 

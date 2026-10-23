@@ -26,8 +26,10 @@ from pathlib import Path
 SOURCE_REPO = "SydneyMCDonaldbigking/comfyui_quick_workflow"
 SOURCE_REF = "main"
 COMFYUI_REF = "v0.34.0"
-SNAPSHOT_SCHEMA = 1
-TORCH_STACK = ("torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1")
+SNAPSHOT_SCHEMA = 2
+TORCH_STACK = ("torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0")
+TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu130"
+TORCH_SNAPSHOT_TAG = "torch2110-cu130"
 FRONTEND_STACK = (
     "comfyui-frontend-package==1.51.9",
     "comfyui-workflow-templates==0.11.54",
@@ -78,7 +80,7 @@ class Layout:
     @property
     def snapshot_key(self) -> str:
         py = f"py{sys.version_info.major}{sys.version_info.minor}"
-        return f"{py}-torch291-cu128-comfy0340-s{SNAPSHOT_SCHEMA}"
+        return f"{py}-{TORCH_SNAPSHOT_TAG}-comfy0340-s{SNAPSHOT_SCHEMA}"
 
     @property
     def snapshot(self) -> Path:
@@ -200,7 +202,7 @@ def runtime_env(layout: Layout) -> dict[str, str]:
     local_pip_cache = layout.content / ".cache" / "pip"
     local_pip_cache.mkdir(parents=True, exist_ok=True)
     env["PIP_CACHE_DIR"] = str(local_pip_cache)
-    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    env["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     env["VIRTUAL_ENV"] = str(layout.venv)
     env["PATH"] = str(layout.runtime_python.parent) + os.pathsep + env.get("PATH", "")
     return env
@@ -274,6 +276,7 @@ def create_runtime_snapshot(layout: Layout) -> None:
             "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             "torch": TORCH_STACK[0],
+            "torch_index_url": TORCH_INDEX_URL,
             "comfyui_ref": COMFYUI_REF,
             "archive": layout.snapshot.name,
             "models_included": False,
@@ -299,7 +302,7 @@ def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[
     pip = [str(layout.runtime_python), "-m", "pip"]
     run(pip + ["install", "--upgrade", "pip", "setuptools", "wheel"], env=env)
     run(
-        pip + ["install", *TORCH_STACK, "--index-url", "https://download.pytorch.org/whl/cu128"],
+        pip + ["install", *TORCH_STACK, "--index-url", TORCH_INDEX_URL],
         env=env,
     )
 
@@ -413,6 +416,8 @@ def plan(layout: Layout, profile: str) -> dict[str, object]:
         "runtime_snapshot": str(layout.snapshot),
         "runtime_snapshot_key": layout.snapshot_key,
         "comfyui_ref": COMFYUI_REF,
+        "torch_stack": list(TORCH_STACK),
+        "torch_index_url": TORCH_INDEX_URL,
         "profile": profile,
         "persistent": ["models", "runtime-cache", "jobs", "work", "review_ready", "rejected", "deliveries"],
         "local_runtime": [str(layout.venv), str(layout.source), str(layout.comfy)],

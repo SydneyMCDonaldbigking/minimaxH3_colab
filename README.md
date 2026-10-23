@@ -15,7 +15,7 @@
 
 1. 私有源包已经预置在 `runtime-cache/private-source-main.zip`，第一次运行不需要 GitHub Token。
 2. 首次准备使用免费的 CPU 运行时；它会安装基础环境、下载约 43GB 模型，并创建环境快照。
-3. 真正生成视频时再切到 A100（完整双阶段流程建议至少约 24GB 显存）。首次 GPU 会话只补装 SageAttention、执行 CUDA 验证并更新快照。
+3. 真正生成视频时再切到 GPU（完整双阶段流程建议至少约 24GB 显存）。当前 Colab G4/Blackwell 使用 PyTorch 2.11 + CUDA 13.0；首次 GPU 会话只补装 SageAttention、执行 CUDA 验证并更新快照。
 4. 以后启动只需挂载 Drive、解压兼容环境快照并校验模型；通常是数分钟级，取决于 Drive 速度和快照大小，不会再重装整套依赖。
 
 只有以后需要从私有仓库同步新版本时，才在 Colab“密钥”面板临时添加
@@ -28,7 +28,7 @@ MyDrive/minimaxH3_colab/
 ├── models/
 ├── runtime-cache/
 │   ├── private-source-main.zip
-│   └── runtime-py*-torch291-cu128-comfy0340-s1.tar.gz
+│   └── runtime-py*-torch2110-cu130-comfy0340-s2.tar.gz
 ├── jobs/{inbox,running,done,failed}/
 ├── work/
 ├── assets/
