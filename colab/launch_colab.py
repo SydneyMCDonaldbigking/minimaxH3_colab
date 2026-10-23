@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -31,8 +30,9 @@ def main() -> int:
     drive = Path(args.drive_root)
     source = content / "comfyui_quick_workflow"
     comfy = content / "ComfyUI"
+    runtime_python = content / "h3env" / "bin" / "python"
     config = source / "config" / "production.colab.yaml"
-    for required in (source / "src" / "worker.py", comfy / "main.py", config):
+    for required in (runtime_python, source / "src" / "worker.py", comfy / "main.py", config):
         if not required.exists():
             raise FileNotFoundError(f"运行环境未完成，请先执行 bootstrap: {required}")
 
@@ -48,7 +48,7 @@ def main() -> int:
     if not healthy(base_url + "/system_stats"):
         comfy_log = (logs / "comfyui.log").open("ab", buffering=0)
         process = subprocess.Popen(
-            [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", str(args.port)],
+            [str(runtime_python), "main.py", "--listen", "127.0.0.1", "--port", str(args.port)],
             cwd=comfy,
             env=env,
             stdout=comfy_log,
@@ -68,7 +68,7 @@ def main() -> int:
     if not args.no_worker:
         worker_log = (logs / "worker.log").open("ab", buffering=0)
         worker = subprocess.Popen(
-            [sys.executable, "-m", "src.worker", "--config", str(config)],
+            [str(runtime_python), "-m", "src.worker", "--config", str(config)],
             cwd=source,
             env=env,
             stdout=worker_log,
@@ -80,7 +80,13 @@ def main() -> int:
             raise RuntimeError(f"worker 启动失败，请查看 {logs / 'worker.log'}")
         pids["worker"] = worker.pid
 
-    state = {"status": "running", "base_url": base_url, "pids": pids, "config": str(config)}
+    state = {
+        "status": "running",
+        "base_url": base_url,
+        "pids": pids,
+        "runtime_python": str(runtime_python),
+        "config": str(config),
+    }
     (content / "h3-colab-runtime.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(state, ensure_ascii=False, indent=2))
     return 0
@@ -88,5 +94,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
