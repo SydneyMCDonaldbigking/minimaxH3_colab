@@ -341,6 +341,33 @@ def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[
 
 
 def ensure_sage_attention(layout: Layout, env: dict[str, str]) -> bool:
+    capability_probe = subprocess.run(
+        [
+            str(layout.runtime_python),
+            "-c",
+            (
+                "import json, torch; "
+                "print(json.dumps(torch.cuda.get_device_capability(0) "
+                "if torch.cuda.is_available() else None))"
+            ),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    try:
+        capability = json.loads(capability_probe.stdout.strip())
+    except json.JSONDecodeError:
+        capability = None
+    if capability and tuple(capability) >= (12, 0):
+        print(
+            "检测到 Blackwell GPU (sm_120+)：跳过不兼容的通用 PyPI SageAttention。"
+            "当前使用 PyTorch 原生 attention；专用 SageAttention 需匹配 Python、Torch、CUDA "
+            "与 sm_120 单独编译。"
+        )
+        return False
+
     probe = subprocess.run(
         [str(layout.runtime_python), "-c", "import sageattention"],
         env=env,
@@ -350,7 +377,11 @@ def ensure_sage_attention(layout: Layout, env: dict[str, str]) -> bool:
     )
     if probe.returncode == 0:
         return False
-    run([str(layout.runtime_python), "-m", "pip", "install", "sageattention"], env=env)
+    try:
+        run([str(layout.runtime_python), "-m", "pip", "install", "sageattention"], env=env)
+    except subprocess.CalledProcessError as error:
+        print(f"警告：SageAttention 安装失败，继续使用 PyTorch 原生 attention: {error}")
+        return False
     return True
 
 
