@@ -23,7 +23,20 @@ class BootstrapColabTests(unittest.TestCase):
 
     def test_snapshot_key_tracks_cuda_13_stack(self) -> None:
         self.assertIn("torch2110-cu130", self.layout.snapshot_key)
-        self.assertTrue(self.layout.snapshot_key.endswith("-s2"))
+        self.assertIn("comfybc5f880", self.layout.snapshot_key)
+        self.assertTrue(self.layout.snapshot_key.endswith("-s3"))
+
+    def test_dance_swap_model_folders_include_sam_checkpoints(self) -> None:
+        self.assertIn("checkpoints", bootstrap_colab.MODEL_FOLDERS)
+
+    def test_dance_swap_plugins_are_pinned(self) -> None:
+        names = {name for name, _url, _ref in bootstrap_colab.CUSTOM_NODE_REPOS}
+        self.assertEqual(
+            names,
+            {"ComfyUI-KJNodes", "ComfyUI-VideoHelperSuite", "MaskVidExperiments"},
+        )
+        for _name, _url, ref in bootstrap_colab.CUSTOM_NODE_REPOS:
+            self.assertRegex(ref, r"^[0-9a-f]{40}$")
 
     def test_blackwell_skips_generic_sageattention(self) -> None:
         capability = SimpleNamespace(stdout="[12, 0]\n", returncode=0)

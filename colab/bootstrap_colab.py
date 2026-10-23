@@ -24,20 +24,38 @@ from pathlib import Path
 
 
 SOURCE_REPO = "SydneyMCDonaldbigking/comfyui_quick_workflow"
-SOURCE_REF = "main"
-COMFYUI_REF = "v0.34.0"
-SNAPSHOT_SCHEMA = 2
+SOURCE_REF = "codex/fast-h3-dance-swap"
+COMFYUI_REF = "bc5f880dbdd43e426077f42ccec53bb577ffee9f"
+SNAPSHOT_SCHEMA = 3
 TORCH_STACK = ("torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0")
 TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu130"
 TORCH_SNAPSHOT_TAG = "torch2110-cu130"
 FRONTEND_STACK = (
-    "comfyui-frontend-package==1.51.9",
-    "comfyui-workflow-templates==0.11.54",
-    "comfyui-embedded-docs==0.5.10",
-    "comfy-kitchen==0.2.31",
-    "comfy-aimdo==0.4.15",
+    "comfyui-frontend-package==1.57.1",
+    "comfyui-workflow-templates==0.11.96",
+    "comfyui-embedded-docs==0.5.14",
+    "comfy-kitchen==0.2.40",
+    "comfy-aimdo==0.6.0",
+)
+CUSTOM_NODE_REPOS = (
+    (
+        "ComfyUI-KJNodes",
+        "https://github.com/kijai/ComfyUI-KJNodes.git",
+        "37a6c45a07bb06cc392431ddbbc741e691c467f4",
+    ),
+    (
+        "ComfyUI-VideoHelperSuite",
+        "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
+        "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+    ),
+    (
+        "MaskVidExperiments",
+        "https://github.com/drozbay/MaskVidExperiments.git",
+        "c32ed8c17e6fe892a174ebf25fe98b1317de97fb",
+    ),
 )
 MODEL_FOLDERS = (
+    "checkpoints",
     "diffusion_models",
     "text_encoders",
     "vae",
@@ -80,7 +98,7 @@ class Layout:
     @property
     def snapshot_key(self) -> str:
         py = f"py{sys.version_info.major}{sys.version_info.minor}"
-        return f"{py}-{TORCH_SNAPSHOT_TAG}-comfy0340-s{SNAPSHOT_SCHEMA}"
+        return f"{py}-{TORCH_SNAPSHOT_TAG}-comfy{COMFYUI_REF[:7]}-s{SNAPSHOT_SCHEMA}"
 
     @property
     def snapshot(self) -> Path:
@@ -154,7 +172,7 @@ def host_ram_gib() -> float:
 
 
 def download_source(layout: Layout, token: str | None) -> Path:
-    archive = layout.cache / "private-source-main.zip"
+    archive = layout.cache / "private-source-fast-h3-dance-swap.zip"
     if token:
         url = f"https://api.github.com/repos/{SOURCE_REPO}/zipball/{SOURCE_REF}"
         request = urllib.request.Request(
@@ -331,12 +349,15 @@ def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[
     if director_requirements.is_file():
         run(pip + ["install", "-r", str(director_requirements)], env=env)
 
-    kj = layout.comfy / "custom_nodes" / "ComfyUI-KJNodes"
-    if not (kj / ".git").is_dir():
-        safe_remove(kj, layout.content)
-        run(["git", "clone", "--filter=blob:none", "https://github.com/kijai/ComfyUI-KJNodes.git", str(kj)])
-    if (kj / "requirements.txt").is_file():
-        run(pip + ["install", "-r", str(kj / "requirements.txt")], env=env)
+    for name, url, ref in CUSTOM_NODE_REPOS:
+        node = layout.comfy / "custom_nodes" / name
+        if not (node / ".git").is_dir():
+            safe_remove(node, layout.content)
+            run(["git", "clone", "--filter=blob:none", url, str(node)])
+        run(["git", "fetch", "--depth", "1", "origin", ref], cwd=node)
+        run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=node)
+        if (node / "requirements.txt").is_file():
+            run(pip + ["install", "-r", str(node / "requirements.txt")], env=env)
     return env
 
 
@@ -418,6 +439,19 @@ def materialize_latent_upscaler(layout: Layout) -> None:
     print("3D latent upscaler 已复制到本地模型根目录，满足 Director realpath 校验。")
 
 
+def install_dance_swap_workflow(layout: Layout, source: Path) -> Path | None:
+    name = "H3-Character-Swap-1.5-SAM3.1-FastH3-OmniRef.json"
+    workflow = source / "workflows" / name
+    if not workflow.is_file():
+        print(f"私有源包暂不包含舞蹈换人工作流: {workflow}")
+        return None
+    destination = layout.comfy / "user" / "default" / "workflows" / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(workflow, destination)
+    print(f"舞蹈换人工作流已安装: {destination}")
+    return destination
+
+
 def write_colab_config(layout: Layout, source: Path) -> Path:
     import yaml
 
@@ -443,7 +477,8 @@ def plan(layout: Layout, profile: str) -> dict[str, object]:
         "drive_root": str(layout.drive),
         "content_root": str(layout.content),
         "source_repo": SOURCE_REPO,
-        "source_cache": str(layout.cache / "private-source-main.zip"),
+        "source_ref": SOURCE_REF,
+        "source_cache": str(layout.cache / "private-source-fast-h3-dance-swap.zip"),
         "runtime_snapshot": str(layout.snapshot),
         "runtime_snapshot_key": layout.snapshot_key,
         "comfyui_ref": COMFYUI_REF,
@@ -460,7 +495,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare MiniMax H3 for Google Colab + Drive")
     parser.add_argument("--drive-root", default="/content/drive/MyDrive/minimaxH3_colab")
     parser.add_argument("--content-root", default="/content")
-    parser.add_argument("--profile", choices=("ref2va", "fl2va", "both"), default="ref2va")
+    parser.add_argument(
+        "--profile", choices=("ref2va", "fl2va", "both", "dance_swap"), default="ref2va"
+    )
     parser.add_argument("--plan", action="store_true", help="print actions without changing anything")
     parser.add_argument("--skip-models", action="store_true")
     parser.add_argument("--skip-sage", action="store_true")
@@ -523,6 +560,7 @@ def main() -> int:
     if gpu["name"] and not args.skip_sage:
         sage_added = ensure_sage_attention(layout, env)
     link_model_store(layout)
+    dance_workflow = install_dance_swap_workflow(layout, source)
     if not args.skip_models:
         run(
             [
@@ -546,7 +584,7 @@ def main() -> int:
                 "--comfy-root",
                 str(layout.comfy),
                 "--profile",
-                "ref2va" if args.profile == "both" else args.profile,
+                args.profile,
             ],
             env=env,
         )
@@ -566,6 +604,7 @@ def main() -> int:
                 "source": str(source),
                 "comfy": str(layout.comfy),
                 "config": str(config),
+                "dance_swap_workflow": str(dance_workflow) if dance_workflow else None,
             },
             ensure_ascii=False,
             indent=2,

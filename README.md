@@ -13,9 +13,9 @@
 
 ## 第一次使用
 
-1. 私有源包已经预置在 `runtime-cache/private-source-main.zip`，第一次运行不需要 GitHub Token。
-2. 首次准备使用免费的 CPU 运行时；它会安装基础环境、下载约 43GB 模型，并创建环境快照。
-3. 真正生成视频时再切到 GPU（完整双阶段流程建议至少约 24GB 显存）。当前 Colab G4/Blackwell 使用 PyTorch 2.11 + CUDA 13.0；Blackwell 默认使用原生 PyTorch attention，避免误装不兼容的通用 SageAttention 包。
+1. 新舞蹈工作流首次同步需要 Colab Secret `GITHUB_TOKEN` 读取私有分支；同步后会缓存为 `runtime-cache/private-source-fast-h3-dance-swap.zip`，后续不再需要重复下载。
+2. 首次准备使用免费的 CPU 运行时；`dance_swap` 会复用已有 H3 文件，并把 FastH3 OmniRef INT8、Character Swap V1.5 与 SAM 3.1（约 24GB）直接保存到 Drive。
+3. 真正生成视频时再切到 GPU（本项目默认要求约 40GB 以上显存）。当前 Colab G4/Blackwell 使用 PyTorch 2.11 + CUDA 13.0；FastH3 固定使用 VSA 10% 与 Comfy Kitchen Attention。
 4. 以后启动只需挂载 Drive、解压兼容环境快照并校验模型；通常是数分钟级，取决于 Drive 速度和快照大小，不会再重装整套依赖。
 
 只有以后需要从私有仓库同步新版本时，才在 Colab“密钥”面板临时添加
@@ -26,9 +26,12 @@
 ```text
 MyDrive/minimaxH3_colab/
 ├── models/
+│   ├── checkpoints/sam3.1_multiplex_fp16.safetensors
+│   ├── diffusion_models/fasth3_omniref_8step_pruned_int8_convrot.safetensors
+│   └── loras/h3_character_swap_v1.5.safetensors
 ├── runtime-cache/
-│   ├── private-source-main.zip
-│   └── runtime-py*-torch2110-cu130-comfy0340-s2.tar.gz
+│   ├── private-source-fast-h3-dance-swap.zip
+│   └── runtime-py*-torch2110-cu130-comfybc5f880-s3.tar.gz
 ├── jobs/{inbox,running,done,failed}/
 ├── work/
 ├── assets/
@@ -46,7 +49,7 @@ MyDrive/minimaxH3_colab/
 `models/`，不会被重复打包。升级 ComfyUI、PyTorch 或私有工作流以后，可显式重建：
 
 ```bash
-python colab/bootstrap_colab.py --profile ref2va --rebuild-runtime
+python colab/bootstrap_colab.py --profile dance_swap --rebuild-runtime
 ```
 
 ## 验证启动计划
@@ -54,12 +57,14 @@ python colab/bootstrap_colab.py --profile ref2va --rebuild-runtime
 这条命令不会下载模型或安装依赖：
 
 ```bash
-python colab/bootstrap_colab.py --plan --profile ref2va
+python colab/bootstrap_colab.py --plan --profile dance_swap
 python colab/launch_colab.py --help
 ```
 
-生产默认仍采用原仓库验证过的 `ref2va_4step`、15 秒、两阶段 latent 修复和
-RealESRGAN 2×；Colab 配置只把超分批次降到 1、分块降到 10 秒，以适应波动较大的宿主内存。
+`dance_swap` 会安装 `H3-Character-Swap-1.5-SAM3.1-FastH3-OmniRef.json`，保留现成
+工作流的 SAM 追踪、动态裁剪、局部回填和视频导出，只把 VDN8 模型链替换为
+FastH3 OmniRef 的 8 步 Euler + simple 调度。该画布按设计保留原背景；需要整帧换景时
+应使用单独的整帧工作流。
 
 
 
