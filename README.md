@@ -5,7 +5,8 @@
 - 挂载 `Google Drive/MyDrive/minimaxH3_colab`
 - 从私有仓库取得运行源码，但不把 Token 写入 Drive 或日志
 - 把模型、下载缓存、任务、参考图和成片持久化到 Drive
-- 每次会话在 `/content` 本地 SSD 重建 ComfyUI 运行目录
+- 首次构建 `venv + ComfyUI + 私有工作流`，保存成版本化 Drive 环境快照
+- 后续会话把兼容快照恢复到 `/content` 本地 SSD，不再重新跑 pip 安装
 - 启动 ComfyUI 与单 GPU 队列 worker
 
 [在 Google Colab 中打开](https://colab.research.google.com/github/SydneyMCDonaldbigking/minimaxH3_colab/blob/main/MinimaxH3_Colab.ipynb)
@@ -14,8 +15,8 @@
 
 1. 私有源包已经预置在 `runtime-cache/private-source-main.zip`，第一次运行不需要 GitHub Token。
 2. 把 Colab 运行时切换到 GPU；完整双阶段流程建议至少约 24GB 显存。
-3. 按顺序运行 Notebook。首次运行会下载约 43GB 模型到 Drive，因此时间较长。
-4. 以后启动会复用 Drive 中的模型、私有源包和 pip 下载缓存。
+3. 按顺序运行 Notebook。首次运行会安装环境、下载约 43GB 模型，并创建环境快照，因此时间较长。
+4. 以后启动只需挂载 Drive、解压兼容环境快照并校验模型；通常是数分钟级，取决于 Drive 速度和快照大小，不会再重装整套依赖。
 
 只有以后需要从私有仓库同步新版本时，才在 Colab“密钥”面板临时添加
 `GITHUB_TOKEN`；它只需要读取 `SydneyMCDonaldbigking/comfyui_quick_workflow` 的权限。
@@ -26,6 +27,8 @@
 MyDrive/minimaxH3_colab/
 ├── models/
 ├── runtime-cache/
+│   ├── private-source-main.zip
+│   └── runtime-py*-torch291-cu128-comfy0340-s1.tar.gz
 ├── jobs/{inbox,running,done,failed}/
 ├── work/
 ├── assets/
@@ -39,6 +42,13 @@ MyDrive/minimaxH3_colab/
 3D latent upscaler 会持久化在 Drive，但每次启动还会复制一份到本地 ComfyUI 模型目录，
 以满足 Director 节点的 `realpath` 安全检查。
 
+只有 ComfyUI、Python 虚拟环境和工作流源码进入环境快照；约 43GB 模型始终单独保存在
+`models/`，不会被重复打包。升级 ComfyUI、PyTorch 或私有工作流以后，可显式重建：
+
+```bash
+python colab/bootstrap_colab.py --profile ref2va --rebuild-runtime
+```
+
 ## 验证启动计划
 
 这条命令不会下载模型或安装依赖：
@@ -50,5 +60,7 @@ python colab/launch_colab.py --help
 
 生产默认仍采用原仓库验证过的 `ref2va_4step`、15 秒、两阶段 latent 修复和
 RealESRGAN 2×；Colab 配置只把超分批次降到 1、分块降到 10 秒，以适应波动较大的宿主内存。
+
+
 
 
