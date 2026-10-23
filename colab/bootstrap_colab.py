@@ -288,7 +288,13 @@ def create_runtime_snapshot(layout: Layout) -> None:
 
 def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[str, str]:
     safe_remove(layout.venv, layout.content)
-    run([sys.executable, "-m", "venv", str(layout.venv)])
+    try:
+        run([sys.executable, "-m", "venv", str(layout.venv)])
+    except subprocess.CalledProcessError:
+        print("系统 venv/ensurepip 不可用，改用 virtualenv 创建隔离环境。")
+        safe_remove(layout.venv, layout.content)
+        run([sys.executable, "-m", "pip", "install", "virtualenv"])
+        run([sys.executable, "-m", "virtualenv", str(layout.venv)])
     env = runtime_env(layout)
     pip = [str(layout.runtime_python), "-m", "pip"]
     run(pip + ["install", "--upgrade", "pip", "setuptools", "wheel"], env=env)
