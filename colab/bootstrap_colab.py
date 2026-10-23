@@ -3,7 +3,8 @@
 
 The public launcher never vendors private nodes.  A small archive of the
 private source and all large model/cache files live in the user's Drive.
-ComfyUI and Python packages are recreated on Colab's local SSD each session.
+The first run builds a versioned runtime snapshot; later Colab sessions
+restore it to the local SSD instead of reinstalling the Python stack.
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import tarfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -24,6 +26,7 @@ from pathlib import Path
 SOURCE_REPO = "SydneyMCDonaldbigking/comfyui_quick_workflow"
 SOURCE_REF = "main"
 COMFYUI_REF = "v0.34.0"
+SNAPSHOT_SCHEMA = 1
 TORCH_STACK = ("torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1")
 FRONTEND_STACK = (
     "comfyui-frontend-package==1.51.9",
@@ -63,6 +66,28 @@ class Layout:
     def comfy(self) -> Path:
         return self.content / "ComfyUI"
 
+    @property
+    def venv(self) -> Path:
+        return self.content / "h3env"
+
+    @property
+    def runtime_python(self) -> Path:
+        relative = Path("Scripts/python.exe") if os.name == "nt" else Path("bin/python")
+        return self.venv / relative
+
+    @property
+    def snapshot_key(self) -> str:
+        py = f"py{sys.version_info.major}{sys.version_info.minor}"
+        return f"{py}-torch291-cu128-comfy0340-s{SNAPSHOT_SCHEMA}"
+
+    @property
+    def snapshot(self) -> Path:
+        return self.cache / f"runtime-{self.snapshot_key}.tar.gz"
+
+    @property
+    def snapshot_manifest(self) -> Path:
+        return self.cache / f"runtime-{self.snapshot_key}.json"
+
 
 def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command))
@@ -83,7 +108,6 @@ def safe_remove(path: Path, root: Path) -> None:
 def ensure_layout(layout: Layout) -> None:
     for folder in (
         layout.cache,
-        layout.cache / "pip-cache",
         layout.cache / "modelscope-staging",
         layout.models,
         layout.drive / "jobs" / "inbox",
@@ -171,11 +195,102 @@ def download_source(layout: Layout, token: str | None) -> Path:
     return layout.source
 
 
-def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[str, str]:
+def runtime_env(layout: Layout) -> dict[str, str]:
     env = os.environ.copy()
-    env["PIP_CACHE_DIR"] = str(layout.cache / "pip-cache")
+    local_pip_cache = layout.content / ".cache" / "pip"
+    local_pip_cache.mkdir(parents=True, exist_ok=True)
+    env["PIP_CACHE_DIR"] = str(local_pip_cache)
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    pip = [sys.executable, "-m", "pip"]
+    env["VIRTUAL_ENV"] = str(layout.venv)
+    env["PATH"] = str(layout.runtime_python.parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def runtime_ready(layout: Layout) -> bool:
+    return all(
+        path.is_file()
+        for path in (
+            layout.runtime_python,
+            layout.comfy / "main.py",
+            layout.source / "src" / "worker.py",
+        )
+    )
+
+
+def clean_local_runtime(layout: Layout) -> None:
+    for path in (layout.venv, layout.comfy, layout.source):
+        safe_remove(path, layout.content)
+
+
+def restore_runtime_snapshot(layout: Layout) -> bool:
+    if not layout.snapshot.is_file():
+        print(f"未找到兼容的环境快照，将执行首次安装: {layout.snapshot.name}")
+        return False
+    print(f"正在从 Drive 恢复环境快照: {layout.snapshot}")
+    started = time.monotonic()
+    clean_local_runtime(layout)
+    try:
+        with tarfile.open(layout.snapshot, "r:gz") as bundle:
+            content_root = layout.content.resolve(strict=False)
+            for member in bundle.getmembers():
+                target = (layout.content / member.name).resolve(strict=False)
+                if target != content_root and content_root not in target.parents:
+                    raise RuntimeError(f"环境快照含有越界路径: {member.name}")
+            bundle.extractall(layout.content)
+        if not runtime_ready(layout):
+            raise RuntimeError("环境快照不完整")
+    except (OSError, tarfile.TarError, RuntimeError) as error:
+        print(f"环境快照恢复失败，将自动重建: {error}")
+        clean_local_runtime(layout)
+        return False
+    print(f"环境快照恢复完成，用时 {time.monotonic() - started:.1f} 秒。")
+    return True
+
+
+def create_runtime_snapshot(layout: Layout) -> None:
+    if not runtime_ready(layout):
+        raise RuntimeError("运行环境未完成，拒绝创建快照")
+    partial = layout.snapshot.with_suffix(layout.snapshot.suffix + ".partial")
+    partial.unlink(missing_ok=True)
+    print(f"正在把可复用环境保存到 Drive（只在首次安装或版本升级时执行）: {layout.snapshot}")
+    started = time.monotonic()
+
+    def exclude_large_or_rebuildable(item: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        parts = Path(item.name).parts
+        if ".git" in parts:
+            return None
+        if len(parts) >= 2 and parts[0] == layout.comfy.name and parts[1] == "models":
+            return None
+        return item
+
+    try:
+        with tarfile.open(partial, "w:gz", compresslevel=1) as bundle:
+            for path in (layout.venv, layout.comfy, layout.source):
+                bundle.add(path, arcname=path.name, recursive=True, filter=exclude_large_or_rebuildable)
+        partial.replace(layout.snapshot)
+        manifest = {
+            "schema": SNAPSHOT_SCHEMA,
+            "key": layout.snapshot_key,
+            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "torch": TORCH_STACK[0],
+            "comfyui_ref": COMFYUI_REF,
+            "archive": layout.snapshot.name,
+            "models_included": False,
+        }
+        layout.snapshot_manifest.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    finally:
+        partial.unlink(missing_ok=True)
+    print(f"环境快照已保存，用时 {time.monotonic() - started:.1f} 秒。")
+
+
+def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[str, str]:
+    safe_remove(layout.venv, layout.content)
+    run([sys.executable, "-m", "venv", str(layout.venv)])
+    env = runtime_env(layout)
+    pip = [str(layout.runtime_python), "-m", "pip"]
     run(pip + ["install", "--upgrade", "pip", "setuptools", "wheel"], env=env)
     run(
         pip + ["install", *TORCH_STACK, "--index-url", "https://download.pytorch.org/whl/cu128"],
@@ -194,7 +309,7 @@ def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[
 
     run(
         [
-            sys.executable,
+            str(layout.runtime_python),
             str(source / "scripts" / "install_director_private.py"),
             "--source",
             str(source / "vendor_source" / "custom_nodes"),
@@ -277,10 +392,13 @@ def plan(layout: Layout, profile: str) -> dict[str, object]:
         "content_root": str(layout.content),
         "source_repo": SOURCE_REPO,
         "source_cache": str(layout.cache / "private-source-main.zip"),
+        "runtime_snapshot": str(layout.snapshot),
+        "runtime_snapshot_key": layout.snapshot_key,
         "comfyui_ref": COMFYUI_REF,
         "profile": profile,
         "persistent": ["models", "runtime-cache", "jobs", "work", "review_ready", "rejected", "deliveries"],
-        "local_runtime": [str(layout.source), str(layout.comfy)],
+        "local_runtime": [str(layout.venv), str(layout.source), str(layout.comfy)],
+        "startup_strategy": "restore compatible Drive snapshot; rebuild only when missing or requested",
     }
 
 
@@ -293,6 +411,11 @@ def main() -> int:
     parser.add_argument("--skip-models", action="store_true")
     parser.add_argument("--skip-sage", action="store_true")
     parser.add_argument("--allow-low-vram", action="store_true")
+    parser.add_argument(
+        "--rebuild-runtime",
+        action="store_true",
+        help="ignore/delete the compatible local runtime and rebuild its Drive snapshot",
+    )
     args = parser.parse_args()
     layout = Layout(Path(args.drive_root).expanduser(), Path(args.content_root).expanduser())
     if args.plan:
@@ -310,13 +433,32 @@ def main() -> int:
     if ram and ram < 48:
         print("警告：宿主内存低于 48 GiB，15 秒任务和 RealESRGAN 超分可能 OOM。")
 
-    source = download_source(layout, os.environ.get("H3_SOURCE_GITHUB_TOKEN"))
-    env = install_python_stack(layout, source, args.skip_sage)
+    runtime_origin = "local"
+    if args.rebuild_runtime:
+        clean_local_runtime(layout)
+        layout.snapshot.unlink(missing_ok=True)
+        layout.snapshot_manifest.unlink(missing_ok=True)
+        ready = False
+    elif runtime_ready(layout):
+        print("检测到本次 Colab 会话中的完整环境，直接复用。")
+        ready = True
+    else:
+        ready = restore_runtime_snapshot(layout)
+        if ready:
+            runtime_origin = "snapshot"
+
+    if ready:
+        source = layout.source
+        env = runtime_env(layout)
+    else:
+        source = download_source(layout, os.environ.get("H3_SOURCE_GITHUB_TOKEN"))
+        env = install_python_stack(layout, source, args.skip_sage)
+        runtime_origin = "built"
     link_model_store(layout)
     if not args.skip_models:
         run(
             [
-                sys.executable,
+                str(layout.runtime_python),
                 str(source / "scripts" / "download_models_cn.py"),
                 "--comfy-root",
                 str(layout.comfy),
@@ -331,7 +473,7 @@ def main() -> int:
     if not args.skip_models:
         run(
             [
-                sys.executable,
+                str(layout.runtime_python),
                 str(source / "scripts" / "verify_runtime.py"),
                 "--comfy-root",
                 str(layout.comfy),
@@ -340,11 +482,29 @@ def main() -> int:
             ],
             env=env,
         )
-    print(json.dumps({"status": "ready", "source": str(source), "comfy": str(layout.comfy), "config": str(config)}, ensure_ascii=False, indent=2))
+    if runtime_origin == "built" or not layout.snapshot.is_file():
+        create_runtime_snapshot(layout)
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "runtime_origin": runtime_origin,
+                "runtime_python": str(layout.runtime_python),
+                "runtime_snapshot": str(layout.snapshot),
+                "source": str(source),
+                "comfy": str(layout.comfy),
+                "config": str(config),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
