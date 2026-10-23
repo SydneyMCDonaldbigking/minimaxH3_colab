@@ -328,9 +328,21 @@ def install_python_stack(layout: Layout, source: Path, skip_sage: bool) -> dict[
         run(["git", "clone", "--filter=blob:none", "https://github.com/kijai/ComfyUI-KJNodes.git", str(kj)])
     if (kj / "requirements.txt").is_file():
         run(pip + ["install", "-r", str(kj / "requirements.txt")], env=env)
-    if not skip_sage:
-        run(pip + ["install", "sageattention"], env=env)
     return env
+
+
+def ensure_sage_attention(layout: Layout, env: dict[str, str]) -> bool:
+    probe = subprocess.run(
+        [str(layout.runtime_python), "-c", "import sageattention"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if probe.returncode == 0:
+        return False
+    run([str(layout.runtime_python), "-m", "pip", "install", "sageattention"], env=env)
+    return True
 
 
 def link_model_store(layout: Layout) -> None:
@@ -412,6 +424,11 @@ def main() -> int:
     parser.add_argument("--skip-sage", action="store_true")
     parser.add_argument("--allow-low-vram", action="store_true")
     parser.add_argument(
+        "--prepare-on-cpu",
+        action="store_true",
+        help="allow first-time environment/model preparation without reserving a GPU",
+    )
+    parser.add_argument(
         "--rebuild-runtime",
         action="store_true",
         help="ignore/delete the compatible local runtime and rebuild its Drive snapshot",
@@ -426,11 +443,16 @@ def main() -> int:
     gpu = gpu_report()
     ram = host_ram_gib()
     print(json.dumps({"gpu": gpu, "host_ram_gib": ram}, ensure_ascii=False, indent=2))
-    if not gpu["name"]:
-        raise RuntimeError("当前 Colab 没有 NVIDIA GPU；请在运行时设置中选择 GPU。")
-    if float(gpu["vram_gib"]) < 23 and not args.allow_low_vram:
+    cpu_prepare = not gpu["name"] and args.prepare_on_cpu
+    if not gpu["name"] and not cpu_prepare:
+        raise RuntimeError(
+            "当前 Colab 没有 NVIDIA GPU；如只做环境和模型准备，请传 --prepare-on-cpu。"
+        )
+    if gpu["name"] and float(gpu["vram_gib"]) < 23 and not args.allow_low_vram:
         raise RuntimeError("完整双阶段工作流需要约 24 GB 显存；如明确要试低显存卡，请传 --allow-low-vram。")
-    if ram and ram < 48:
+    if cpu_prepare:
+        print("CPU 准备模式：下载模型、构建基础环境和快照；暂不安装 SageAttention，也不做 CUDA 验证。")
+    elif ram and ram < 48:
         print("警告：宿主内存低于 48 GiB，15 秒任务和 RealESRGAN 超分可能 OOM。")
 
     runtime_origin = "local"
@@ -452,8 +474,12 @@ def main() -> int:
         env = runtime_env(layout)
     else:
         source = download_source(layout, os.environ.get("H3_SOURCE_GITHUB_TOKEN"))
-        env = install_python_stack(layout, source, args.skip_sage)
+        env = install_python_stack(layout, source, args.skip_sage or cpu_prepare)
         runtime_origin = "built"
+
+    sage_added = False
+    if gpu["name"] and not args.skip_sage:
+        sage_added = ensure_sage_attention(layout, env)
     link_model_store(layout)
     if not args.skip_models:
         run(
@@ -470,7 +496,7 @@ def main() -> int:
         )
         materialize_latent_upscaler(layout)
     config = write_colab_config(layout, source)
-    if not args.skip_models:
+    if not args.skip_models and gpu["name"]:
         run(
             [
                 str(layout.runtime_python),
@@ -482,13 +508,17 @@ def main() -> int:
             ],
             env=env,
         )
-    if runtime_origin == "built" or not layout.snapshot.is_file():
+    elif not args.skip_models:
+        print("模型下载完成；CUDA 验证将在首次 GPU 会话中执行。")
+    if runtime_origin == "built" or sage_added or not layout.snapshot.is_file():
         create_runtime_snapshot(layout)
     print(
         json.dumps(
             {
-                "status": "ready",
+                "status": "prepared" if cpu_prepare else "ready",
                 "runtime_origin": runtime_origin,
+                "cpu_prepare": cpu_prepare,
+                "sageattention_added": sage_added,
                 "runtime_python": str(layout.runtime_python),
                 "runtime_snapshot": str(layout.snapshot),
                 "source": str(source),
