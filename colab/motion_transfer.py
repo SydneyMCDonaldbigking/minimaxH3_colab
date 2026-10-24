@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -171,6 +172,11 @@ def main() -> int:
         # （实测两次，都停在 anon-rss 45GB）。多分镜段间卸载模型把峰值压回单段水平，
         # 代价是每段重新加载约一分钟。
         node["每段后卸载模型"] = True
+    sage = prompt.get("11", {})
+    if sage.get("class_type") == "PathchSageAttentionKJ" and importlib.util.find_spec("sageattention") is None:
+        # bootstrap skips the generic SageAttention wheel on Blackwell (sm_120+); KJNodes' "auto"
+        # then dies with ModuleNotFoundError mid-run, so fall back to PyTorch attention instead.
+        sage["inputs"]["sage_attention"] = "disabled"
 
     if args.dry_run:
         Path(args.dry_run).write_text(json.dumps(prompt, ensure_ascii=False, indent=2), encoding="utf-8")
