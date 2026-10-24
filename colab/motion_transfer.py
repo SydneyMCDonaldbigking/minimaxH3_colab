@@ -120,7 +120,9 @@ def main() -> int:
             {"prompt": prompt_text if index == 0 else _shift_pictures(prompt_text, 1),
              "duration_seconds": seconds,
              **({"first_frame_mode": "previous_tail"} if index else {}),
-             **({"enabled": args.only == index + 1} if args.only else {})}
+             **({"enabled": args.only == index + 1} if args.only else {}),
+             # Segments ignore the job-level seed; give each its own, the same in every --only run.
+             **({"seed": args.seed + index} if args.seed is not None else {})}
             for index, (_, seconds) in enumerate(slices)
         ]
     cfg = merged_job_config(config, job)

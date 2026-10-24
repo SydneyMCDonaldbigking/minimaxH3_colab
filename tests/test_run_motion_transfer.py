@@ -34,6 +34,26 @@ class PromptCheckTests(unittest.TestCase):
         run_motion_transfer.check_prompt("A dancer from <Picture 1> follows <Video 1>.", "action")
 
 
+class SegmentTests(unittest.TestCase):
+    def test_frames_snap_down_to_the_h3_grid(self) -> None:
+        self.assertEqual(run_motion_transfer.aligned_frames(8.0), 192)  # 8 s lands on the grid
+        self.assertEqual(run_motion_transfer.aligned_frames(9.535), 226)
+        self.assertEqual((run_motion_transfer.aligned_frames(5.0) - 5) % 17, 0)
+
+    def test_long_clip_splits_into_equal_aligned_segments(self) -> None:
+        count, seconds = run_motion_transfer.plan_segments(19.07, None, 0)
+        self.assertEqual(count, 2)
+        self.assertAlmostEqual(seconds, 226 / 24)
+        self.assertLessEqual(count * seconds, 19.07)
+
+    def test_short_clip_stays_one_segment(self) -> None:
+        self.assertEqual(run_motion_transfer.plan_segments(8.0, None, 0), (1, 8.0))
+
+    def test_too_long_segments_are_refused(self) -> None:
+        with self.assertRaises(SystemExit):
+            run_motion_transfer.plan_segments(40.0, None, 2)
+
+
 class SeedTests(unittest.TestCase):
     def test_explicit_seeds_keep_their_order(self) -> None:
         self.assertEqual(run_motion_transfer.parse_seeds("101, 7,202", 5), [101, 7, 202])

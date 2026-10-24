@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import secrets
 import shutil
@@ -126,21 +127,46 @@ def check_log(log: Path, offset: int, want_audio: bool) -> list[str]:
     return problems
 
 
+def aligned_frames(seconds: float) -> int:
+    """Largest H3 frame count (17k + 5 at 24 fps) that fits in this many seconds.
+
+    H3 rounds a segment up to that grid; cutting the reference to it keeps every
+    output frame on the matching reference frame, so segments meet the original
+    timeline exactly and the source audio can be laid back over the result.
+    """
+    return max(5, (int(seconds * 24) - 5) // 17 * 17 + 5)
+
+
+def plan_segments(available: float, duration: float | None, segments: int) -> tuple[int, float]:
+    """Number of segments and seconds per segment for this clip."""
+    wanted = min(duration or available, available)
+    count = segments or math.ceil(wanted / MAX_SECONDS)
+    seconds = aligned_frames(wanted / count) / 24
+    if seconds > MAX_SECONDS:
+        raise SystemExit(f"每段 {seconds:.2f} 秒超过 {MAX_SECONDS:.0f} 秒上限，请加大 --segments")
+    if seconds < 2:
+        raise SystemExit(f"每段只有 {seconds:.2f} 秒，至少要 2 秒；请减少 --segments 或换更长的参考视频")
+    return count, seconds
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="H3 动作迁移：角色图定外观和场景，舞蹈视频定动作")
     parser.add_argument("--drive-root", type=Path, default=Path("/content/drive/MyDrive/minimaxH3_colab"))
-    parser.add_argument("--image", type=Path, action="append", required=True, help="角色图，可重复")
+    parser.add_argument("--image", type=Path, action="append", required=True,
+                        help="参考图，可重复；顺序就是 <Picture 1>、<Picture 2>…")
     parser.add_argument("--video", type=Path, required=True, help="舞蹈参考视频（单个连续镜头）")
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--start", type=float, default=0.0, help="从参考视频第几秒开始取")
-    parser.add_argument("--duration", type=float, help="成片秒数，默认取参考视频长度，最多 15")
+    parser.add_argument("--duration", type=float, help="成片秒数，默认取参考视频全长")
+    parser.add_argument("--segments", type=int, default=0,
+                        help="分几段生成，默认按每段不超过 15 秒自动算；段 2 起接上一段尾帧")
     parser.add_argument("--orientation", choices=["auto", *sorted(SIZES)], default="auto",
                         help="成片横竖屏，默认跟参考视频一致")
     parser.add_argument("--video-mode", choices=sorted(MODE_PHRASES), default="action")
     parser.add_argument("--no-video-audio", action="store_true", help="不把参考视频的音轨送进模型")
     parser.add_argument("--mux-original-audio", action="store_true",
-                        help="另存一份用参考视频原音轨整条覆盖的成片")
+                        help="另存一份用参考视频原音轨整条覆盖的成片（分段时总是另存）")
     parser.add_argument("--seeds", help="逗号分隔的 seed，例如 101,102,103；每个 seed 出一条")
     parser.add_argument("--draws", type=int, default=1, help="不给 --seeds 时随机抽几条")
     parser.add_argument("--dry-run", action="store_true", help="CPU 检查：只生成 API prompt，不生成视频")
@@ -167,19 +193,24 @@ def main() -> int:
     run(bootstrap + (["--prepare-on-cpu"] if args.dry_run else []))
 
     total, source_w, source_h = probe(args.video)
-    available = total - args.start
-    seconds = min(args.duration or available, available, MAX_SECONDS)
-    if seconds < 2:
-        raise SystemExit(f"参考视频可用部分只有 {available:.1f} 秒，至少要 2 秒")
+    count, segment_seconds = plan_segments(total - args.start, args.duration, args.segments)
+    seconds = count * segment_seconds
     orientation = args.orientation
     if orientation == "auto":
         orientation = "landscape" if source_w > source_h else "portrait"
     (width, height), (ref_w, ref_h) = SIZES[orientation]
     reference = work / "motion_small.mp4"
-    run(["ffmpeg", "-y", "-loglevel", "error", "-ss", args.start, "-t", seconds, "-i", args.video,
+    run(["ffmpeg", "-y", "-loglevel", "error", "-ss", args.start, "-t", f"{seconds:.4f}", "-i", args.video,
          "-vf", f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
                 f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,fps=24",
          "-c:v", "libx264", "-crf", "18", "-c:a", "aac", reference])
+    parts = []
+    for index in range(count if count > 1 else 0):
+        part = work / f"motion_part{index + 1}.mp4"
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", reference,
+             "-ss", f"{index * segment_seconds:.4f}", "-t", f"{segment_seconds:.4f}",
+             "-c:v", "libx264", "-crf", "18", "-c:a", "aac", part])
+        parts.append(part)
 
     shutil.copy2(reference, out_dir / reference.name)
     shutil.copy2(args.prompt_file, out_dir / "prompt.txt")
@@ -189,7 +220,8 @@ def main() -> int:
     restart_between = host_ram_gib() < 80  # below this one 40-47 GB model staging per process
     env = os.environ.copy()
     env["H3_SOURCE_ROOT"] = str(SOURCE_ROOT)
-    summary = {"job_id": args.job_id, "seconds": round(seconds, 2), "size": [width, height],
+    summary = {"job_id": args.job_id, "seconds": round(seconds, 3), "segments": count,
+               "segment_seconds": round(segment_seconds, 4), "size": [width, height],
                "video_mode": args.video_mode, "dry_run": args.dry_run, "out_dir": str(out_dir),
                "seeds": seeds, "draws": []}
     for index, seed in enumerate(seeds):
@@ -201,9 +233,12 @@ def main() -> int:
         result = work / f"{name}.mp4"
         driver = [RUNTIME_PYTHON, HERE / "motion_transfer.py",
                   *[part for image in args.image for part in ("--image", image)],
-                  "--video", reference, "--prompt-file", args.prompt_file, "--job-id", name,
-                  "--duration", round(seconds, 2), "--width", width, "--height", height,
+                  "--prompt-file", args.prompt_file, "--job-id", name, "--width", width, "--height", height,
                   "--video-mode", args.video_mode, "--video-fps", 24, "--seed", seed, "--out", result]
+        if parts:
+            driver += [arg for part in parts for arg in ("--slice", f"{part}:{segment_seconds:.4f}")]
+        else:
+            driver += ["--video", reference, "--duration", f"{segment_seconds:.4f}"]
         if args.no_video_audio:
             driver.append("--no-video-audio")
         if args.dry_run:
@@ -215,12 +250,22 @@ def main() -> int:
             summary["validation"] = json.loads(report.read_text(encoding="utf-8"))["summary"]
             break
         started = time.time()
-        run(driver, env=env)
+        if parts and restart_between:
+            # Below 80 GB a second model staging in one process gets OOM-killed: one segment per
+            # process, chained through the tail frame the Director left on disk, then merge.
+            for segment in range(1, count + 1):
+                if segment > 1:
+                    restart_comfy(args.drive_root)
+                run(driver + ["--only", segment], env=env)
+            run(driver + ["--merge-only"], env=env)
+        else:
+            run(driver, env=env)
         draw = {"seed": seed, "file": result.name, "elapsed_seconds": round(time.time() - started, 1),
                 "log_problems": check_log(log, offset, not args.no_video_audio)}
         summary["draws"].append(draw)
         shutil.copy2(result, out_dir / result.name)
-        if args.mux_original_audio:
+        if args.mux_original_audio or parts:
+            # Segments get their music separately and it jumps at the seam; lay the source track over.
             muxed = out_dir / f"{name}_original_audio.mp4"
             run(["ffmpeg", "-y", "-loglevel", "error", "-i", result, "-i", reference,
                  "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", muxed])
