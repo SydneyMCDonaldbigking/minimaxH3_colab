@@ -3,7 +3,9 @@
 
 Appearance comes from --image (the character, and the scene it stands in), motion
 from --video (the dance). The whole frame is regenerated, unlike the dance_swap
-canvas, which only repaints one person inside the original video.
+canvas, which only repaints one person inside the original video. --camera-video
+adds a second reference in camera mode, so the shot can move (a walking selfie,
+say) while the dance still comes from a locked-off clip.
 
 Steps: restore the runtime from the Drive snapshot (ref2va profile), start
 ComfyUI without the queue worker, shrink the reference video, run
@@ -21,6 +23,7 @@ runtime without models, prepares the video and writes the API prompt only.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -34,7 +37,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 RUNTIME_PYTHON = Path("/content/h3env/bin/python")
 SOURCE_ROOT = Path("/content/comfyui_quick_workflow")
-MAX_SECONDS = 15.0  # Ref2VA caps both a segment and its reference video at 15 s
+# Ref2VA caps a segment and its reference video at 15 s, but a 15 s segment renders 362 frames
+# while the Director cuts a reference to 360 and then down to 345: 14 s keeps the two equal.
+MAX_SEGMENT_SECONDS = 14
 # The node skips its own video declaration when the prompt has a retention_analysis
 # and a <Video tag, so the official sentence for the chosen mode must be in the prompt.
 MODE_PHRASES = {
@@ -56,10 +61,10 @@ def run(cmd: list, **kwargs) -> None:
 
 
 def probe(video: Path) -> tuple[float, int, int]:
-    """Duration in seconds and display width/height of the first video stream."""
+    """Duration in seconds and display width/height of the first video stream (its own duration if known)."""
     info = json.loads(subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-         "stream=width,height:stream_side_data=rotation:format=duration", "-of", "json", str(video)],
+         "stream=width,height,duration:stream_side_data=rotation:format=duration", "-of", "json", str(video)],
         capture_output=True, text=True, check=True,
     ).stdout)
     stream = info["streams"][0]
@@ -67,7 +72,7 @@ def probe(video: Path) -> tuple[float, int, int]:
     rotation = abs(int(next((d.get("rotation", 0) for d in stream.get("side_data_list", [])), 0)))
     if rotation in (90, 270):  # phone clips are often stored landscape with a rotation flag
         width, height = height, width
-    return float(info["format"]["duration"]), width, height
+    return float(stream.get("duration") or info["format"]["duration"]), width, height
 
 
 def has_gpu() -> bool:
@@ -75,11 +80,14 @@ def has_gpu() -> bool:
         ["nvidia-smi", "-L"], capture_output=True).returncode == 0
 
 
-def check_prompt(text: str, mode: str) -> None:
-    if "retention_analysis" in text and "<Video" in text and MODE_PHRASES[mode] not in text:
-        raise SystemExit(
-            f"提示词写了 retention_analysis，但没有 {mode} 模式的官方声明原句"
-            f"（需包含 “{MODE_PHRASES[mode]}”）；不补这句 --video-mode 不会进模型。")
+def check_prompt(text: str, *modes: str) -> None:
+    if "retention_analysis" not in text or "<Video" not in text:
+        return
+    for mode in modes:
+        if MODE_PHRASES[mode] not in text:
+            raise SystemExit(
+                f"提示词写了 retention_analysis，但没有 {mode} 模式的官方声明原句"
+                f"（需包含 “{MODE_PHRASES[mode]}”）；不补这句这一路参考视频的模式不会进模型。")
 
 
 def parse_seeds(seeds: str | None, draws: int) -> list[int]:
@@ -106,7 +114,7 @@ def restart_comfy(drive_root: Path) -> None:
     run([sys.executable, HERE / "launch_colab.py", "--drive-root", drive_root, "--no-worker"])
 
 
-def check_log(log: Path, offset: int, want_audio: bool) -> list[str]:
+def check_log(log: Path, offset: int, want_audio: bool, want_camera: bool = False) -> list[str]:
     """Return the problems found in the ComfyUI log lines written during this job."""
     with log.open("rb") as handle:
         handle.seek(offset)
@@ -120,33 +128,51 @@ def check_log(log: Path, offset: int, want_audio: bool) -> list[str]:
         problems.append("日志里没有“段1 开始生成”")
     elif any("参考图 0 张" in line for line in starts):
         problems.append("参考图 0 张：角色图没挂上")
-    if not videos:
+    motion = [line for line in videos if "<Video 1>" in line]
+    if not motion:
         problems.append("没有“参考视频 <Video 1>”：video_refs 没生效")
-    elif want_audio and not all("已发送原音轨" in line for line in videos):
+    elif want_audio and not all("已发送原音轨" in line for line in motion):
         problems.append("参考视频只送了画面，音轨没发送")
+    if want_camera and not any("<Video 2>" in line for line in videos):
+        problems.append("没有“参考视频 <Video 2>”：运镜参考没生效")
     return problems
 
 
-def aligned_frames(seconds: float) -> int:
-    """Largest H3 frame count (17k + 5 at 24 fps) that fits in this many seconds.
+def director_frames(seconds: int) -> int:
+    """Frames the Director renders for a segment of this many whole seconds.
 
-    H3 rounds a segment up to that grid; cutting the reference to it keeps every
-    output frame on the matching reference frame, so segments meet the original
-    timeline exactly and the source audio can be laid back over the result.
+    Same rule as studio_node._segment_frame_count: the nearest 17k + 5 count from 39 to 362.
+    The Director first rounds a segment to whole seconds, so 9.42 s renders as 9 s, 209 frames.
+    Cutting each reference part to exactly this many frames keeps the segments on the source
+    timeline frame for frame, so the source audio can be laid back over the result.
     """
-    return max(5, (int(seconds * 24) - 5) // 17 * 17 + 5)
+    return min(range(39, 363, 17), key=lambda frames: abs(frames - seconds * 24))
 
 
-def plan_segments(available: float, duration: float | None, segments: int) -> tuple[int, float]:
-    """Number of segments and seconds per segment for this clip."""
-    wanted = min(duration or available, available)
-    count = segments or math.ceil(wanted / MAX_SECONDS)
-    seconds = aligned_frames(wanted / count) / 24
-    if seconds > MAX_SECONDS:
-        raise SystemExit(f"每段 {seconds:.2f} 秒超过 {MAX_SECONDS:.0f} 秒上限，请加大 --segments")
-    if seconds < 2:
-        raise SystemExit(f"每段只有 {seconds:.2f} 秒，至少要 2 秒；请减少 --segments 或换更长的参考视频")
-    return count, seconds
+def plan_segments(available: float, duration: float | None, segments: int) -> list[int]:
+    """Whole seconds per segment, covering as much of the clip as fits without running past it."""
+    limit = int(min(duration or available, available) * 24 + 0.05)  # 18.833333 s is 452 frames, not 451
+    longest = director_frames(MAX_SEGMENT_SECONDS)
+    count = segments or max(1, math.ceil(limit / longest))
+    if count * longest < limit:
+        raise SystemExit(f"{count} 段最多 {count * longest / 24:.1f} 秒，参考视频要用 {limit / 24:.1f} 秒；"
+                         "请加大 --segments 或用 --duration 截短")
+    plans = [plan for plan in itertools.combinations_with_replacement(range(2, MAX_SEGMENT_SECONDS + 1), count)
+             if sum(map(director_frames, plan)) <= limit]
+    if not plans:
+        raise SystemExit(f"参考视频只有 {limit / 24:.2f} 秒，不够分 {count} 段；请减少 --segments 或换更长的参考视频")
+    # Most frames covered first, then the most even split.
+    return list(max(plans, key=lambda plan: (sum(map(director_frames, plan)), plan[0] - plan[-1])))
+
+
+def cut(source: Path, start: float, frames: int, out: Path, size: tuple[int, int], audio: bool) -> Path:
+    """Exactly `frames` frames at 24 fps from `start`, letterboxed to `size`."""
+    width, height = size
+    run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.4f}", "-t", f"{(frames + 0.5) / 24:.4f}",
+         "-i", source, "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                              f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=24",
+         "-frames:v", frames, "-c:v", "libx264", "-crf", "18", *(["-c:a", "aac"] if audio else ["-an"]), out])
+    return out
 
 
 def main() -> int:
@@ -155,7 +181,13 @@ def main() -> int:
     parser.add_argument("--image", type=Path, action="append", required=True,
                         help="参考图，可重复；顺序就是 <Picture 1>、<Picture 2>…")
     parser.add_argument("--video", type=Path, required=True, help="舞蹈参考视频（单个连续镜头）")
-    parser.add_argument("--prompt-file", type=Path, required=True)
+    parser.add_argument("--camera-video", type=Path,
+                        help="运镜参考视频，作 <Video 2>、camera 模式、不送音轨：只照它的机位走，不取它的人和景")
+    parser.add_argument("--camera-start", type=float,
+                        help="运镜视频第几秒对上舞蹈视频的 --start，默认同 --start")
+    parser.add_argument("--prompt-file", type=Path, action="append", required=True,
+                        help="提示词；给一个各段共用，给的个数等于段数时每段一个。"
+                             "都按段 1 的图片编号写，段 2 起脚本自动顺延")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--start", type=float, default=0.0, help="从参考视频第几秒开始取")
     parser.add_argument("--duration", type=float, help="成片秒数，默认取参考视频全长")
@@ -172,11 +204,12 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="CPU 检查：只生成 API prompt，不生成视频")
     args = parser.parse_args()
 
-    prompt_text = args.prompt_file.read_text(encoding="utf-8")
-    check_prompt(prompt_text, args.video_mode)
-    for path in [*args.image, args.video]:
+    modes = [args.video_mode, *(["camera"] if args.camera_video else [])]
+    for path in [*args.image, args.video, *args.prompt_file, *([args.camera_video] if args.camera_video else [])]:
         if not path.is_file():
             raise SystemExit(f"找不到文件：{path}")
+    for prompt_file in args.prompt_file:
+        check_prompt(prompt_file.read_text(encoding="utf-8"), *modes)
     if not args.dry_run and not has_gpu():
         raise SystemExit("当前没有 GPU；只做检查请加 --dry-run")
 
@@ -195,27 +228,36 @@ def main() -> int:
     run([sys.executable, HERE / "patch_director.py"])
 
     total, source_w, source_h = probe(args.video)
-    count, segment_seconds = plan_segments(total - args.start, args.duration, args.segments)
-    seconds = count * segment_seconds
+    plan = plan_segments(total - args.start, args.duration, args.segments)
+    frames = [director_frames(seconds) for seconds in plan]
+    count, seconds = len(plan), sum(frames) / 24
+    if len(args.prompt_file) not in (1, count):
+        raise SystemExit(f"给了 {len(args.prompt_file)} 个提示词，但要分 {count} 段；给一个共用，或者每段一个")
     orientation = args.orientation
     if orientation == "auto":
         orientation = "landscape" if source_w > source_h else "portrait"
-    (width, height), (ref_w, ref_h) = SIZES[orientation]
-    reference = work / "motion_small.mp4"
-    run(["ffmpeg", "-y", "-loglevel", "error", "-ss", args.start, "-t", f"{seconds:.4f}", "-i", args.video,
-         "-vf", f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
-                f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,fps=24",
-         "-c:v", "libx264", "-crf", "18", "-c:a", "aac", reference])
-    parts = []
-    for index in range(count if count > 1 else 0):
-        part = work / f"motion_part{index + 1}.mp4"
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", reference,
-             "-ss", f"{index * segment_seconds:.4f}", "-t", f"{segment_seconds:.4f}",
-             "-c:v", "libx264", "-crf", "18", "-c:a", "aac", part])
-        parts.append(part)
+    (width, height), ref_size = SIZES[orientation]
+    reference = cut(args.video, args.start, sum(frames), work / "motion_small.mp4", ref_size, audio=True)
+    camera = None
+    if args.camera_video:
+        camera_start = args.start if args.camera_start is None else args.camera_start
+        camera_left = probe(args.camera_video)[0] - camera_start
+        if camera_left * 24 < sum(frames) - 1:
+            raise SystemExit(f"运镜视频从第 {camera_start} 秒起只剩 {camera_left:.2f} 秒，不够 {seconds:.2f} 秒")
+        camera = cut(args.camera_video, camera_start, sum(frames), work / "camera_small.mp4", ref_size, audio=False)
+    # Segment N gets frames [sum(frames[:N-1]), sum(frames[:N])) of every reference.
+    starts = [sum(frames[:index]) / 24 for index in range(count)]
+    parts = [cut(reference, start, n, work / f"motion_part{index + 1}.mp4", ref_size, audio=True)
+             for index, (start, n) in enumerate(zip(starts, frames))] if count > 1 else []
+    camera_parts = [cut(camera, start, n, work / f"camera_part{index + 1}.mp4", ref_size, audio=False)
+                    for index, (start, n) in enumerate(zip(starts, frames))] if camera and count > 1 else []
 
-    shutil.copy2(reference, out_dir / reference.name)
-    shutil.copy2(args.prompt_file, out_dir / "prompt.txt")
+    for source in (reference, camera):
+        if source:
+            shutil.copy2(source, out_dir / source.name)
+    for index, prompt_file in enumerate(args.prompt_file):
+        name = "prompt.txt" if len(args.prompt_file) == 1 else f"prompt_seg{index + 1}.txt"
+        shutil.copy2(prompt_file, out_dir / name)
 
     seeds = parse_seeds(args.seeds, args.draws)[:1 if args.dry_run else None]
     log = args.drive_root / "logs" / "comfyui.log"
@@ -223,9 +265,9 @@ def main() -> int:
     env = os.environ.copy()
     env["H3_SOURCE_ROOT"] = str(SOURCE_ROOT)
     summary = {"job_id": args.job_id, "seconds": round(seconds, 3), "segments": count,
-               "segment_seconds": round(segment_seconds, 4), "size": [width, height],
-               "video_mode": args.video_mode, "dry_run": args.dry_run, "out_dir": str(out_dir),
-               "seeds": seeds, "draws": []}
+               "segment_seconds": plan, "segment_frames": frames, "size": [width, height],
+               "video_mode": args.video_mode, "camera_video": args.camera_video.name if camera else None,
+               "dry_run": args.dry_run, "out_dir": str(out_dir), "seeds": seeds, "draws": []}
     for index, seed in enumerate(seeds):
         if not args.dry_run and (index == 0 or restart_between):
             restart_comfy(args.drive_root)
@@ -235,12 +277,17 @@ def main() -> int:
         result = work / f"{name}.mp4"
         driver = [RUNTIME_PYTHON, HERE / "motion_transfer.py",
                   *[part for image in args.image for part in ("--image", image)],
-                  "--prompt-file", args.prompt_file, "--job-id", name, "--width", width, "--height", height,
+                  "--prompt-file", args.prompt_file[0], "--job-id", name, "--width", width, "--height", height,
                   "--video-mode", args.video_mode, "--video-fps", 24, "--seed", seed, "--out", result]
+        if len(args.prompt_file) > 1:
+            driver += [arg for prompt_file in args.prompt_file for arg in ("--segment-prompt", prompt_file)]
         if parts:
-            driver += [arg for part in parts for arg in ("--slice", f"{part}:{segment_seconds:.4f}")]
+            # Whole seconds: the Director rounds them anyway, and each part is cut to what it renders.
+            driver += [arg for part, secs in zip(parts, plan) for arg in ("--slice", f"{part}:{secs}")]
+            driver += [arg for part in camera_parts for arg in ("--camera-video", part)]
         else:
-            driver += ["--video", reference, "--duration", f"{segment_seconds:.4f}"]
+            driver += ["--video", reference, "--duration", plan[0]]
+            driver += ["--camera-video", camera] if camera else []
         if args.no_video_audio:
             driver.append("--no-video-audio")
         if args.dry_run:
@@ -263,11 +310,12 @@ def main() -> int:
         else:
             run(driver, env=env)
         draw = {"seed": seed, "file": result.name, "elapsed_seconds": round(time.time() - started, 1),
-                "log_problems": check_log(log, offset, not args.no_video_audio)}
+                "log_problems": check_log(log, offset, not args.no_video_audio, want_camera=bool(camera))}
         summary["draws"].append(draw)
         shutil.copy2(result, out_dir / result.name)
         if args.mux_original_audio or parts:
             # Segments get their music separately and it jumps at the seam; lay the source track over.
+            # The parts were cut to the frames the Director renders, so the track lines up throughout.
             muxed = out_dir / f"{name}_original_audio.mp4"
             run(["ffmpeg", "-y", "-loglevel", "error", "-i", result, "-i", reference,
                  "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", muxed])

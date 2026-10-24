@@ -51,6 +51,12 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--width", type=int, default=768)
     parser.add_argument("--height", type=int, default=1344)
+    parser.add_argument("--camera-video", action="append", default=[],
+                        help="运镜参考视频，camera 模式，排在动作视频后面（单段时紧跟 --video，多分镜时是 <Video 2>）。"
+                             "多分镜时每段一个，与 --slice 一一对应")
+    parser.add_argument("--segment-prompt", action="append", default=[],
+                        help="多分镜：每段自己的提示词文件，与 --slice 一一对应，按段 1 的图片编号写；"
+                             "不给则各段共用 --prompt-file")
     parser.add_argument("--video-mode", default="action", choices=MODES)
     parser.add_argument("--video-fps", type=int, default=24,
                         help="参考视频采样帧率；调低=抽帧概括动作、省显存")
@@ -82,10 +88,14 @@ def main() -> int:
         parser.error("至少要给一个 --video（单段）或 --slice（多分镜）")
     if len(args.image) > 9:
         parser.error("参考图最多 9 张")
-    if not args.slice and len(args.video) > 3:
-        parser.error("单段模式下参考视频最多 3 段")
-    if len(args.image) + len(args.video) > 12:
+    if not args.slice and len(args.video) + len(args.camera_video) > 3:
+        parser.error("单段模式下参考视频（动作 + 运镜）最多 3 段")
+    if len(args.image) + len(args.video) + len(args.camera_video) > 12:
         parser.error("图 + 视频 + 音频合计不得超过 12 个文件")
+    if args.slice and args.camera_video and len(args.camera_video) != len(args.slice):
+        parser.error("多分镜时 --camera-video 要与 --slice 一一对应")
+    if args.segment_prompt and len(args.segment_prompt) != len(args.slice):
+        parser.error("--segment-prompt 要与 --slice 一一对应")
 
     slices = []
     for spec in args.slice:
@@ -95,6 +105,8 @@ def main() -> int:
         slices.append((path, float(seconds)))
 
     prompt_text = Path(args.prompt_file).read_text(encoding="utf-8")
+    segment_texts = ([Path(p).read_text(encoding="utf-8") for p in args.segment_prompt]
+                     or [prompt_text] * len(slices))
     config = load_config(args.config)
     job = {
         "job_id": args.job_id,
@@ -118,7 +130,7 @@ def main() -> int:
             return text
 
         job["segments"] = [
-            {"prompt": prompt_text if index == 0 else _shift_pictures(prompt_text, 1),
+            {"prompt": segment_texts[index] if index == 0 else _shift_pictures(segment_texts[index], 1),
              "duration_seconds": seconds,
              **({"first_frame_mode": "previous_tail"} if index else {}),
              **({"enabled": args.only == index + 1} if args.only else {}),
@@ -134,6 +146,7 @@ def main() -> int:
         client = None
         uploaded_images = [f"h3jobs/{args.job_id}/{Path(p).name}" for p in job["references"]]
         uploaded_videos = [f"h3jobs/{args.job_id}/{Path(p).name}" for p in sources]
+        uploaded_cameras = [f"h3jobs/{args.job_id}/{Path(p).name}" for p in args.camera_video]
     else:
         comfy = cfg["comfy"]
         client = ComfyClient(comfy["base_url"], int(comfy.get("job_timeout_seconds", 3600)),
@@ -142,8 +155,9 @@ def main() -> int:
         client.health()
         uploaded_images = [client.upload(p, f"h3jobs/{args.job_id}") for p in job["references"]]
         uploaded_videos = [client.upload(p, f"h3jobs/{args.job_id}") for p in sources]
-    print(json.dumps({"uploaded_images": uploaded_images,
-                      "uploaded_videos": uploaded_videos}, ensure_ascii=False), flush=True)
+        uploaded_cameras = [client.upload(p, f"h3jobs/{args.job_id}") for p in args.camera_video]
+    print(json.dumps({"uploaded_images": uploaded_images, "uploaded_videos": uploaded_videos,
+                      "uploaded_cameras": uploaded_cameras}, ensure_ascii=False), flush=True)
 
     # 多分镜时角色图必须挂在每一段自己的 refs 上。顶层共享位（text_shared_refs_json）
     # 是导演台前端的机制，无头调用时段内 refs 为空，日志会打"参考图 0 张"——
@@ -155,9 +169,13 @@ def main() -> int:
     node = prompt["13"]["inputs"]
     segments = json.loads(node["segments_json"])
     for index, segment in enumerate(segments):
-        # 多分镜：第 N 段只看第 N 片动作视频；单段：所有视频都给这一段。
-        segment["video_refs"] = [uploaded_videos[index]] if slices else uploaded_videos
-        segment["video_ref_modes"] = {name: args.video_mode for name in segment["video_refs"]}
+        # 多分镜：第 N 段只看第 N 片动作视频（和第 N 片运镜视频）；单段：所有视频都给这一段。
+        # 顺序决定 <Video N> 编号：动作在前，运镜在后。
+        motion = [uploaded_videos[index]] if slices else list(uploaded_videos)
+        cameras = ([uploaded_cameras[index]] if slices else list(uploaded_cameras)) if uploaded_cameras else []
+        segment["video_refs"] = motion + cameras
+        segment["video_ref_modes"] = {**{name: args.video_mode for name in motion},
+                                      **{name: "camera" for name in cameras}}
         segment["video_fps"] = args.video_fps
         segment["video_skip"] = args.video_skip
         # 节点只在这个开关为真时才去解参考视频的音轨（studio_node.py 的
@@ -213,7 +231,7 @@ def main() -> int:
     client.download(final, out)
     print(json.dumps({
         "job_id": args.job_id, "prompt_id": prompt_id,
-        "video_refs": uploaded_videos, "video_mode": args.video_mode,
+        "video_refs": uploaded_videos, "camera_refs": uploaded_cameras, "video_mode": args.video_mode,
         "elapsed_seconds": round(time.time() - started, 1),
         "estimated_gpu_cost_cny": round((time.time() - started) / 3600
                                         * float(cfg.get("cost", {}).get("gpu_hourly_cny", 0)), 4),
