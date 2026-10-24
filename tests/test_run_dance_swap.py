@@ -59,6 +59,18 @@ class FillCanvasTests(unittest.TestCase):
                                        seconds=5, start_frames=0, aspect="16:9")
 
 
+class AspectTests(unittest.TestCase):
+    def test_common_sources_map_to_their_canvas_aspect(self) -> None:
+        self.assertEqual(run_dance_swap.nearest_aspect(960, 720), "4:3")
+        self.assertEqual(run_dance_swap.nearest_aspect(1280, 720), "16:9")
+        self.assertEqual(run_dance_swap.nearest_aspect(720, 1280), "9:16")
+        self.assertEqual(run_dance_swap.nearest_aspect(1080, 1080), "1:1")
+
+    def test_odd_sizes_pick_the_closest(self) -> None:
+        self.assertEqual(run_dance_swap.nearest_aspect(1920, 1040), "16:9")
+        self.assertEqual(run_dance_swap.nearest_aspect(2560, 1080), "21:9")
+
+
 class ApiNodeTests(unittest.TestCase):
     def test_finds_the_single_node_of_a_type(self) -> None:
         prompt = {"31": {"class_type": "RandomNoise"}, "42": {"class_type": "VHS_VideoCombine"}}

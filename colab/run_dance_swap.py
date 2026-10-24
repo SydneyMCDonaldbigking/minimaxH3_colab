@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import secrets
 import shutil
 import subprocess
@@ -35,6 +36,14 @@ CANVAS = COMFY / "user" / "default" / "workflows" / "H3-Character-Swap-1.5-SAM3.
 BASE_URL = "http://127.0.0.1:8188"
 MAX_SECONDS = 15.0
 JOB_TIMEOUT_SECONDS = 3 * 3600
+# ResolutionSelector's aspect options; canvas_api.py expands "4:3" to "4:3 (Standard)".
+ASPECTS = {"1:1": 1.0, "2:3": 2 / 3, "3:2": 3 / 2, "3:4": 3 / 4, "4:3": 4 / 3,
+           "9:16": 9 / 16, "16:9": 16 / 9, "21:9": 21 / 9}
+
+
+def nearest_aspect(width: int, height: int) -> str:
+    """The canvas aspect closest to the source, so the centre crop removes as little as possible."""
+    return min(ASPECTS, key=lambda name: abs(math.log(width / height / ASPECTS[name])))
 
 
 def run(cmd: list, **kwargs) -> None:
@@ -168,8 +177,8 @@ def main() -> int:
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--start", type=float, default=0.0, help="从原视频第几秒开始")
     parser.add_argument("--duration", type=float, help="成片秒数，默认取原视频长度，最多 15")
-    parser.add_argument("--aspect", choices=["auto", "16:9", "9:16"], default="auto",
-                        help="成片比例，默认跟原视频一致")
+    parser.add_argument("--aspect", choices=["auto", *ASPECTS], default="auto",
+                        help="成片比例，默认取最接近原视频的")
     parser.add_argument("--seeds", help="逗号分隔的 seed，例如 101,102,103；每个 seed 出一条")
     parser.add_argument("--draws", type=int, default=1, help="不给 --seeds 时随机抽几条")
     parser.add_argument("--dry-run", action="store_true", help="CPU 检查：只转换并校验，不生成视频")
@@ -193,7 +202,7 @@ def main() -> int:
     seconds = min(args.duration or available, available, MAX_SECONDS)
     if seconds < 2:
         raise SystemExit(f"原视频可用部分只有 {available:.1f} 秒，至少要 2 秒")
-    aspect = args.aspect if args.aspect != "auto" else ("16:9" if width > height else "9:16")
+    aspect = args.aspect if args.aspect != "auto" else nearest_aspect(width, height)
 
     work = Path("/content/h3-dance-swap") / args.job_id
     work.mkdir(parents=True, exist_ok=True)
