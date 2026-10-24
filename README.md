@@ -64,7 +64,30 @@ python colab/launch_colab.py --help
 `dance_swap` 会安装 `H3-Character-Swap-1.5-SAM3.1-FastH3-OmniRef.json`，保留现成
 工作流的 SAM 追踪、动态裁剪、局部回填和视频导出，只把 VDN8 模型链替换为
 FastH3 OmniRef 的 8 步 Euler + simple 调度。该画布按设计保留原背景；需要整帧换景时
-应使用单独的整帧工作流。
+用下面的整帧动作迁移。
+
+## 整帧动作迁移（保留舞蹈动作，换人换景）
+
+`colab/run_motion_transfer.py` 重新生成整帧画面：外观和场景来自角色图（`<Picture 1>`），
+动作来自舞蹈视频（`<Video 1>`，action 模式）。走 Ref2VA 4 步，即
+`minimax_h3_ref2va_pruned_int8_convrot` + `minimax_h3_ref2v_turbo_4step_v0.1` LoRA，
+`ref2va` profile 已经下载的文件就够，不需要额外模型。
+
+```bash
+# GPU 运行时（推荐 G4），Drive 已挂载到 /content/drive
+python colab/run_motion_transfer.py \
+  --image /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/character.png \
+  --video /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/dance.mp4 \
+  --prompt-file /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/prompt.txt \
+  --job-id <id> --mux-original-audio
+```
+
+- 参考视频截到最多 15 秒，缩到长边 960、24fps；成片 768×1344（竖）或 1344×768（横），默认跟参考视频一致。
+- 提示词写成六段结构时，`retention_analysis` 必须带所选模式的官方声明原句，否则导演台节点会跳过
+  `--video-mode`；脚本发现缺了会直接拒绝。
+- 跑完核对 ComfyUI 日志：参考图至少 1 张、出现 `参考视频 <Video 1>`、`已发送原音轨`，缺一条就以非零退出。
+- 成片、预处理后的参考视频、提示词和 `run.json` 存到 `MyDrive/minimaxH3_colab/deliveries/motion/<id>/`。
+- 加 `--dry-run` 可在 CPU 运行时上只生成 API prompt，并交给 ComfyUI 的 `validate_prompt` 校验，不生成视频。
 
 
 

@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+MODULE_PATH = Path(__file__).parents[1] / "colab" / "run_motion_transfer.py"
+SPEC = importlib.util.spec_from_file_location("run_motion_transfer", MODULE_PATH)
+assert SPEC and SPEC.loader
+run_motion_transfer = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = run_motion_transfer
+SPEC.loader.exec_module(run_motion_transfer)
+
+ACTION_LINE = ("<Video 1>: reference - use only the subject motion, body mechanics and blocking "
+               "from <Video 1>; do not copy identities, costumes, locations or visual style from that video.")
+
+
+class PromptCheckTests(unittest.TestCase):
+    def test_six_part_prompt_without_mode_sentence_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            run_motion_transfer.check_prompt("retention_analysis:\n<Video 1> appearance: not_preserved.", "action")
+
+    def test_six_part_prompt_with_mode_sentence_passes(self) -> None:
+        run_motion_transfer.check_prompt(f"retention_analysis:\n{ACTION_LINE}", "action")
+
+    def test_sentence_must_match_the_chosen_mode(self) -> None:
+        with self.assertRaises(SystemExit):
+            run_motion_transfer.check_prompt(f"retention_analysis:\n{ACTION_LINE}", "camera")
+
+    def test_prompt_without_retention_analysis_is_left_to_the_node(self) -> None:
+        run_motion_transfer.check_prompt("A dancer from <Picture 1> follows <Video 1>.", "action")
+
+
+class LogCheckTests(unittest.TestCase):
+    def check(self, lines: list[str], want_audio: bool = True) -> list[str]:
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / "comfyui.log"
+            log.write_text("earlier job 段1 开始生成（参考图 0 张）\n", encoding="utf-8")
+            offset = log.stat().st_size
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+            return run_motion_transfer.check_log(log, offset, want_audio)
+
+    def test_good_run_has_no_problems(self) -> None:
+        self.assertEqual(self.check([
+            "[H3导演台] ==== 段1 开始生成（参考图 1 张）====",
+            "[H3导演台] 段1 参考视频 <Video 1>: motion_small.mp4（240 帧，已发送原音轨）",
+        ]), [])
+
+    def test_lines_before_the_offset_are_ignored(self) -> None:
+        self.assertEqual(len(self.check([])), 2)
+
+    def test_missing_picture_and_audio_are_reported(self) -> None:
+        problems = self.check([
+            "[H3导演台] ==== 段1 开始生成（参考图 0 张）====",
+            "[H3导演台] 段1 参考视频 <Video 1>: motion_small.mp4（240 帧，仅参考画面、不发送原音轨）",
+        ])
+        self.assertEqual(len(problems), 2)
+
+    def test_picture_only_audio_is_fine_when_audio_is_off(self) -> None:
+        self.assertEqual(self.check([
+            "[H3导演台] ==== 段1 开始生成（参考图 1 张）====",
+            "[H3导演台] 段1 参考视频 <Video 1>: motion_small.mp4（240 帧，仅参考画面、不发送原音轨）",
+        ], want_audio=False), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
