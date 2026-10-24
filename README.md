@@ -79,8 +79,11 @@ python colab/run_motion_transfer.py \
   --image /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/character.png \
   --video /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/dance.mp4 \
   --prompt-file /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/prompt.txt \
-  --job-id <id> --mux-original-audio
+  --job-id <id> --draws 3 --mux-original-audio
 ```
+
+- `--draws N` 随机抽 N 个 seed、`--seeds 101,102,103` 指定 seed，每个 seed 出一条 `<id>_s<seed>.mp4`。
+  同一配置只换 seed 差异就很大，比较效果时每格至少 3 条。宿主机内存不足 80GB 时每条之间重启 ComfyUI。
 
 - 参考视频截到最多 15 秒，缩到长边 960、24fps；成片 768×1344（竖）或 1344×768（横），默认跟参考视频一致。
 - 提示词写成六段结构时，`retention_analysis` 必须带所选模式的官方声明原句，否则导演台节点会跳过

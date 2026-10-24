@@ -11,6 +11,9 @@ colab/motion_transfer.py, check the ComfyUI log lines that prove the picture,
 video and audio references reached the model, then save everything under
 MyDrive/minimaxH3_colab/deliveries/motion/<job-id>/.
 
+--seeds/--draws give one clip per seed from the same inputs, so routes and
+settings can be compared over a spread of draws rather than a single lucky one.
+
 Drive must already be mounted at /content/drive (`colab drivemount`, or
 google.colab.drive.mount in a notebook).  --dry-run runs on CPU: it restores the
 runtime without models, prepares the video and writes the API prompt only.
@@ -20,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -77,6 +81,30 @@ def check_prompt(text: str, mode: str) -> None:
             f"（需包含 “{MODE_PHRASES[mode]}”）；不补这句 --video-mode 不会进模型。")
 
 
+def parse_seeds(seeds: str | None, draws: int) -> list[int]:
+    if seeds:
+        return [int(seed) for seed in seeds.split(",") if seed.strip()]
+    return [secrets.randbelow(10**15) for _ in range(max(1, draws))]
+
+
+def host_ram_gib() -> float:
+    for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+        if line.startswith("MemTotal:"):
+            return int(line.split()[1]) / 1024**2
+    return 0.0
+
+
+def restart_comfy(drive_root: Path) -> None:
+    """Start a fresh ComfyUI so models cached by an earlier job do not pile up in host RAM."""
+    pattern = "main.py --listen 127.0.0.1"
+    subprocess.run(["pkill", "-f", pattern], check=False)
+    for _ in range(30):
+        if subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode:
+            break
+        time.sleep(1)
+    run([sys.executable, HERE / "launch_colab.py", "--drive-root", drive_root, "--no-worker"])
+
+
 def check_log(log: Path, offset: int, want_audio: bool) -> list[str]:
     """Return the problems found in the ComfyUI log lines written during this job."""
     with log.open("rb") as handle:
@@ -113,6 +141,8 @@ def main() -> int:
     parser.add_argument("--no-video-audio", action="store_true", help="不把参考视频的音轨送进模型")
     parser.add_argument("--mux-original-audio", action="store_true",
                         help="另存一份用参考视频原音轨整条覆盖的成片")
+    parser.add_argument("--seeds", help="逗号分隔的 seed，例如 101,102,103；每个 seed 出一条")
+    parser.add_argument("--draws", type=int, default=1, help="不给 --seeds 时随机抽几条")
     parser.add_argument("--dry-run", action="store_true", help="CPU 检查：只生成 API prompt，不生成视频")
     args = parser.parse_args()
 
@@ -130,8 +160,11 @@ def main() -> int:
     out_dir = work / "check" if args.dry_run else args.drive_root / "deliveries" / "motion" / args.job_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    bootstrap = [sys.executable, HERE / "bootstrap_colab.py", "--drive-root", args.drive_root, "--profile", "ref2va"]
-    run(bootstrap + (["--prepare-on-cpu", "--skip-models"] if args.dry_run else []))
+    # --skip-models: the ref2va files are already in Drive, and ComfyUI rejects the prompt if
+    # one is missing; checking them here would only spend GPU minutes re-reading Drive.
+    bootstrap = [sys.executable, HERE / "bootstrap_colab.py", "--drive-root", args.drive_root,
+                 "--profile", "ref2va", "--skip-models"]
+    run(bootstrap + (["--prepare-on-cpu"] if args.dry_run else []))
 
     total, source_w, source_h = probe(args.video)
     available = total - args.start
@@ -148,47 +181,56 @@ def main() -> int:
                 f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,fps=24",
          "-c:v", "libx264", "-crf", "18", "-c:a", "aac", reference])
 
-    log = args.drive_root / "logs" / "comfyui.log"
-    if not args.dry_run:
-        run([sys.executable, HERE / "launch_colab.py", "--drive-root", args.drive_root, "--no-worker"])
-    offset = log.stat().st_size if log.is_file() else 0
-
-    result = work / f"{args.job_id}.mp4"
-    driver = [RUNTIME_PYTHON, HERE / "motion_transfer.py",
-              *[part for image in args.image for part in ("--image", image)],
-              "--video", reference, "--prompt-file", args.prompt_file, "--job-id", args.job_id,
-              "--duration", round(seconds, 2), "--width", width, "--height", height,
-              "--video-mode", args.video_mode, "--video-fps", 24, "--out", result]
-    if args.no_video_audio:
-        driver.append("--no-video-audio")
-    api_prompt = out_dir / "api_prompt.json"
-    if args.dry_run:
-        driver += ["--dry-run", api_prompt]
-    env = os.environ.copy()
-    env["H3_SOURCE_ROOT"] = str(SOURCE_ROOT)
-    started = time.time()
-    run(driver, env=env)
-
-    summary = {"job_id": args.job_id, "seconds": round(seconds, 2), "size": [width, height],
-               "video_mode": args.video_mode, "dry_run": args.dry_run, "out_dir": str(out_dir)}
-    if args.dry_run:
-        # ComfyUI's own validate_prompt, in a separate process that never starts the server.
-        report = out_dir / "validation.json"
-        run([RUNTIME_PYTHON, HERE / "validate_api_prompt.py", api_prompt, report], cwd="/content/ComfyUI")
-        summary["validation"] = json.loads(report.read_text(encoding="utf-8"))["summary"]
-    else:
-        summary["elapsed_seconds"] = round(time.time() - started, 1)
-        summary["log_problems"] = check_log(log, offset, not args.no_video_audio)
-        shutil.copy2(result, out_dir / result.name)
-        if args.mux_original_audio:
-            muxed = out_dir / f"{args.job_id}_original_audio.mp4"
-            run(["ffmpeg", "-y", "-loglevel", "error", "-i", result, "-i", reference,
-                 "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", muxed])
     shutil.copy2(reference, out_dir / reference.name)
     shutil.copy2(args.prompt_file, out_dir / "prompt.txt")
+
+    seeds = parse_seeds(args.seeds, args.draws)[:1 if args.dry_run else None]
+    log = args.drive_root / "logs" / "comfyui.log"
+    restart_between = host_ram_gib() < 80  # below this one 40-47 GB model staging per process
+    env = os.environ.copy()
+    env["H3_SOURCE_ROOT"] = str(SOURCE_ROOT)
+    summary = {"job_id": args.job_id, "seconds": round(seconds, 2), "size": [width, height],
+               "video_mode": args.video_mode, "dry_run": args.dry_run, "out_dir": str(out_dir),
+               "seeds": seeds, "draws": []}
+    for index, seed in enumerate(seeds):
+        if not args.dry_run and (index == 0 or restart_between):
+            restart_comfy(args.drive_root)
+        offset = log.stat().st_size if log.is_file() else 0
+        # One Director project per draw, so the seeds never overwrite each other.
+        name = f"{args.job_id}_s{seed}"
+        result = work / f"{name}.mp4"
+        driver = [RUNTIME_PYTHON, HERE / "motion_transfer.py",
+                  *[part for image in args.image for part in ("--image", image)],
+                  "--video", reference, "--prompt-file", args.prompt_file, "--job-id", name,
+                  "--duration", round(seconds, 2), "--width", width, "--height", height,
+                  "--video-mode", args.video_mode, "--video-fps", 24, "--seed", seed, "--out", result]
+        if args.no_video_audio:
+            driver.append("--no-video-audio")
+        if args.dry_run:
+            api_prompt = out_dir / "api_prompt.json"
+            run(driver + ["--dry-run", api_prompt], env=env)
+            # ComfyUI's own validate_prompt, in a separate process that never starts the server.
+            report = out_dir / "validation.json"
+            run([RUNTIME_PYTHON, HERE / "validate_api_prompt.py", api_prompt, report], cwd="/content/ComfyUI")
+            summary["validation"] = json.loads(report.read_text(encoding="utf-8"))["summary"]
+            break
+        started = time.time()
+        run(driver, env=env)
+        draw = {"seed": seed, "file": result.name, "elapsed_seconds": round(time.time() - started, 1),
+                "log_problems": check_log(log, offset, not args.no_video_audio)}
+        summary["draws"].append(draw)
+        shutil.copy2(result, out_dir / result.name)
+        if args.mux_original_audio:
+            muxed = out_dir / f"{name}_original_audio.mp4"
+            run(["ffmpeg", "-y", "-loglevel", "error", "-i", result, "-i", reference,
+                 "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", muxed])
+        (out_dir / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        if draw["log_problems"]:
+            break  # every later seed would miss the same reference; stop spending GPU time
     (out_dir / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    failed = summary.get("log_problems") or not summary.get("validation", {}).get("all_ok", True)
+    failed = (any(d["log_problems"] for d in summary["draws"])
+              or not summary.get("validation", {}).get("all_ok", True))
     return 1 if failed else 0
 
 

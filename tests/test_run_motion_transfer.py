@@ -34,6 +34,18 @@ class PromptCheckTests(unittest.TestCase):
         run_motion_transfer.check_prompt("A dancer from <Picture 1> follows <Video 1>.", "action")
 
 
+class SeedTests(unittest.TestCase):
+    def test_explicit_seeds_keep_their_order(self) -> None:
+        self.assertEqual(run_motion_transfer.parse_seeds("101, 7,202", 5), [101, 7, 202])
+
+    def test_draws_give_that_many_distinct_random_seeds(self) -> None:
+        seeds = run_motion_transfer.parse_seeds(None, 3)
+        self.assertEqual(len(set(seeds)), 3)
+
+    def test_at_least_one_draw(self) -> None:
+        self.assertEqual(len(run_motion_transfer.parse_seeds(None, 0)), 1)
+
+
 class LogCheckTests(unittest.TestCase):
     def check(self, lines: list[str], want_audio: bool = True) -> list[str]:
         with tempfile.TemporaryDirectory() as folder:

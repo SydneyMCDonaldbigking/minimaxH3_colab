@@ -72,6 +72,7 @@ def main() -> int:
     parser.add_argument("--unload-between", action="store_true",
                         help="每段后卸载模型；多分镜默认开启")
     parser.add_argument("--out", required=True, help="产物 MP4 落盘路径")
+    parser.add_argument("--seed", type=int, help="固定采样 seed；不给则随机")
     parser.add_argument("--dry-run", metavar="PROMPT_JSON",
                         help="不连 ComfyUI、不上传，只把补好视频参考的 API prompt 写到这里")
     args = parser.parse_args()
@@ -105,6 +106,8 @@ def main() -> int:
         "upscale": {"enabled": False},      # 不走超分
         "metadata": {},
     }
+    if args.seed is not None:
+        job["seed"] = args.seed
     if slices:
         # 每段一片动作视频；第 2 段起接上一段尾帧，姿势跨接缝连着走。
         # 节点的 _inject_ref2va_tail_reference 会自己把尾帧关系写进 retention_analysis。
