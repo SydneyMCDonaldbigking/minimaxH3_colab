@@ -87,7 +87,8 @@ python colab/run_motion_transfer.py \
   `--video-mode`；脚本发现缺了会直接拒绝。
 - 跑完核对 ComfyUI 日志：参考图至少 1 张、出现 `参考视频 <Video 1>`、`已发送原音轨`，缺一条就以非零退出。
 - 成片、预处理后的参考视频、提示词和 `run.json` 存到 `MyDrive/minimaxH3_colab/deliveries/motion/<id>/`。
-- 加 `--dry-run` 可在 CPU 运行时上只生成 API prompt，并交给 ComfyUI 的 `validate_prompt` 校验，不生成视频。
+- 加 `--dry-run` 可在 CPU 运行时上只生成 API prompt，并交给 ComfyUI 的 `validate_prompt` 校验，不生成视频；
+  检查产物留在 `/content/h3-motion/<id>/check/`，不写进 Drive。
 
 
 

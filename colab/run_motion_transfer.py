@@ -124,10 +124,11 @@ def main() -> int:
     if not args.dry_run and not has_gpu():
         raise SystemExit("当前没有 GPU；只做检查请加 --dry-run")
 
-    out_dir = args.drive_root / "deliveries" / "motion" / args.job_id
-    out_dir.mkdir(parents=True, exist_ok=True)
     work = Path("/content/h3-motion") / args.job_id
     work.mkdir(parents=True, exist_ok=True)
+    # A dry run is a check, not a delivery: keep its files on the runtime.
+    out_dir = work / "check" if args.dry_run else args.drive_root / "deliveries" / "motion" / args.job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     bootstrap = [sys.executable, HERE / "bootstrap_colab.py", "--drive-root", args.drive_root, "--profile", "ref2va"]
     run(bootstrap + (["--prepare-on-cpu", "--skip-models"] if args.dry_run else []))
