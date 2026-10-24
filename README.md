@@ -28,7 +28,8 @@ MyDrive/minimaxH3_colab/
 ├── models/
 │   ├── checkpoints/sam3.1_multiplex_fp16.safetensors
 │   ├── diffusion_models/fasth3_omniref_8step_pruned_int8_convrot.safetensors
-│   └── loras/h3_character_swap_v1.5.safetensors
+│   ├── loras/h3_character_swap_v1.5.safetensors
+│   └── vae_approx/taeh3.safetensors        # 舞蹈画布实时预览用；缺了主视频输出会被拒
 ├── runtime-cache/
 │   ├── private-source-fast-h3-dance-swap.zip
 │   └── runtime-py*-torch2110-cu130-comfybc5f880-s3.tar.gz
@@ -65,6 +66,13 @@ python colab/launch_colab.py --help
 工作流的 SAM 追踪、动态裁剪、局部回填和视频导出，只把 VDN8 模型链替换为
 FastH3 OmniRef 的 8 步 Euler + simple 调度。该画布按设计保留原背景；需要整帧换景时
 应使用单独的整帧工作流。
+
+## 转换与 CPU 校验
+
+[FastH3_DanceSwap_CPU_Check.ipynb](https://colab.research.google.com/github/SydneyMCDonaldbigking/minimaxH3_colab/blob/main/FastH3_DanceSwap_CPU_Check.ipynb)
+只用 CPU 运行时：把 VDN8 加速版画布转换成 FastH3 OmniRef，对照 Comfy 官方
+`video_fasth3_ominiref_r2v.json` 模板检查采样链，确认模型文件与 Character Swap LoRA
+的目标层都在，最后用固定版本 ComfyUI 自己的 `validate_prompt` 校验整张图（不执行、不加载大模型）。
 
 
 
