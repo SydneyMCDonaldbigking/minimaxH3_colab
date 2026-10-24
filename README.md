@@ -74,6 +74,25 @@ FastH3 OmniRef 的 8 步 Euler + simple 调度。该画布按设计保留原背�
 `video_fasth3_ominiref_r2v.json` 模板检查采样链，确认模型文件与 Character Swap LoRA
 的目标层都在，最后用固定版本 ComfyUI 自己的 `validate_prompt` 校验整张图（不执行、不加载大模型）。
 
+## 命令行换人（多 seed）
+
+`colab/run_dance_swap.py` 不开 ComfyUI 界面直接跑换人画布：把原视频、角色图、SAM 要换的人（英文描述）
+和 H3 提示词按节点类型填进画布，用 `colab/canvas_api.py` 转成 API prompt 并交给 `validate_prompt`
+校验，再每个 seed 跑一条，存到 `MyDrive/minimaxH3_colab/deliveries/dance_swap/<id>/<id>_s<seed>.mp4`。
+
+```bash
+python colab/run_dance_swap.py \
+  --video /content/drive/MyDrive/minimaxH3_colab/assets/dance_swap/<id>/dance.mp4 \
+  --image /content/drive/MyDrive/minimaxH3_colab/assets/dance_swap/<id>/character.png \
+  --target "the dancing girl on the right in a white T-shirt" \
+  --prompt-file /content/drive/MyDrive/minimaxH3_colab/assets/dance_swap/<id>/prompt.txt \
+  --job-id <id> --draws 3
+```
+
+- 成片比例默认跟原视频一致（`--aspect 16:9|9:16` 可改），时长默认取原视频长度，最多 15 秒。
+- 同一配置只换 seed 差异就很大，比较效果时每格至少 3 条；宿主机内存不足 80GB 时每条之间重启 ComfyUI。
+- 加 `--dry-run` 只在 CPU 上转换和校验，不生成视频。
+
 
 
 
