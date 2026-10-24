@@ -64,7 +64,43 @@ python colab/launch_colab.py --help
 `dance_swap` 会安装 `H3-Character-Swap-1.5-SAM3.1-FastH3-OmniRef.json`，保留现成
 工作流的 SAM 追踪、动态裁剪、局部回填和视频导出，只把 VDN8 模型链替换为
 FastH3 OmniRef 的 8 步 Euler + simple 调度。该画布按设计保留原背景；需要整帧换景时
-应使用单独的整帧工作流。
+用下面的整帧动作迁移。
+
+## 整帧动作迁移（保留舞蹈动作，换人换景）
+
+`colab/run_motion_transfer.py` 重新生成整帧画面：外观和场景来自角色图（`<Picture 1>`），
+动作来自舞蹈视频（`<Video 1>`，action 模式）。走 Ref2VA 4 步，即
+`minimax_h3_ref2va_pruned_int8_convrot` + `minimax_h3_ref2v_turbo_4step_v0.1` LoRA，
+`ref2va` profile 已经下载的文件就够，不需要额外模型。
+
+```bash
+# GPU 运行时（推荐 G4），Drive 已挂载到 /content/drive
+python colab/run_motion_transfer.py \
+  --image /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/character.png \
+  --video /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/dance.mp4 \
+  --prompt-file /content/drive/MyDrive/minimaxH3_colab/assets/motion/<id>/prompt.txt \
+  --job-id <id> --draws 3 --mux-original-audio
+```
+
+- `--camera-video` 再挂一段运镜参考（`<Video 2>`，camera 模式，不送音轨）：舞蹈视频是固定机位的绿幕时，
+  用它给成片加上运镜（比如边走边自拍），只取机位怎么走，不取里面的人和景。它和舞蹈视频按同一时间轴切，
+  `--camera-start` 指定两者的对齐点。提示词里要另写一句 camera 模式的官方声明原句。
+- `--prompt-file` 可以按段数给多个，每段一个，用来把只在某一段发生的事写进那一段；都按段 1 的图片编号写。
+
+- `--draws N` 随机抽 N 个 seed、`--seeds 101,102,103` 指定 seed，每个 seed 出一条 `<id>_s<seed>.mp4`。
+  同一配置只换 seed 差异就很大，比较效果时每格至少 3 条。宿主机内存不足 80GB 时每条之间重启 ComfyUI。
+
+- 参考视频缩到长边 960、24fps；成片 768×1344（竖）或 1344×768（横），默认跟参考视频一致。
+- 每段最多 14 秒；更长的参考视频自动分段（或用 `--segments N` 指定），段 2 起接上一段尾帧，
+  合并后另存一份用原音轨整条覆盖的成片。导演台会把每段时长四舍五入成整秒再取最近的 17k+5 帧
+  （9.42 秒只出 209 帧），所以脚本按整秒分段、把参考视频按导演台实际出的帧数切，成片与原视频逐帧对时。
+  分段是降级方案：接缝看得出，形象会逐段漂移。
+- 提示词写成六段结构时，`retention_analysis` 必须带所选模式的官方声明原句，否则导演台节点会跳过
+  `--video-mode`；脚本发现缺了会直接拒绝。
+- 跑完核对 ComfyUI 日志：参考图至少 1 张、出现 `参考视频 <Video 1>`、`已发送原音轨`，缺一条就以非零退出。
+- 成片、预处理后的参考视频、提示词和 `run.json` 存到 `MyDrive/minimaxH3_colab/deliveries/motion/<id>/`。
+- 加 `--dry-run` 可在 CPU 运行时上只生成 API prompt，并交给 ComfyUI 的 `validate_prompt` 校验，不生成视频；
+  检查产物留在 `/content/h3-motion/<id>/check/`，不写进 Drive。
 
 
 
