@@ -25,6 +25,7 @@ def canvas() -> dict:
         {"id": 2, "type": "PrimitiveStringMultiline", "mode": 0, "widgets_values": ["subject_definitions: ..."]},
         {"id": 17, "type": "PrimitiveFloat", "mode": 0, "widgets_values": [10]},
         {"id": 44, "type": "PrimitiveNode", "mode": 0, "widgets_values": ["16:9 (Widescreen)", "fixed", ""]},
+        {"id": 53, "type": "SAM3_VideoTrack", "mode": 0, "widgets_values": [0.5, 1, 1]},
     ]}
 
 
@@ -47,6 +48,13 @@ class FillCanvasTests(unittest.TestCase):
         self.assertEqual(nodes[2]["widgets_values"], ["new prompt"])
         self.assertEqual(nodes[17]["widgets_values"], [8.0])
         self.assertEqual(nodes[44]["widgets_values"][0], "9:16")
+        self.assertEqual(nodes[53]["widgets_values"], [0.5, 4, 1])  # threshold and interval untouched
+
+    def test_sam_object_limit_can_be_set(self) -> None:
+        filled = run_dance_swap.fill_canvas(
+            canvas(), video="v", image="i", target="t", prompt="p", seconds=5, start_frames=0,
+            aspect="16:9", sam_max_objects=1)
+        self.assertEqual(self.by_id(filled)[53]["widgets_values"][1], 1)
 
     def test_bypassed_scene_image_is_left_alone(self) -> None:
         self.assertEqual(self.by_id(self.fill())[126]["widgets_values"][0], "scene_reference.png")

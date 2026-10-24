@@ -110,13 +110,17 @@ def only(nodes: list[dict], kind: str, active: bool = True) -> dict:
 
 
 def fill_canvas(canvas: dict, *, video: str, image: str, target: str, prompt: str,
-                seconds: float, start_frames: int, aspect: str) -> dict:
+                seconds: float, start_frames: int, aspect: str, sam_max_objects: int = 4) -> dict:
     """Write the job's inputs into the canvas, finding each node by its type."""
     nodes = canvas["nodes"]
     loader = only(nodes, "VHS_LoadVideo")
     loader["widgets_values"].update({"video": video, "skip_first_frames": start_frames})
     only(nodes, "LoadImage")["widgets_values"][0] = image
     only(nodes, "CLIPTextEncode")["widgets_values"][0] = target
+    # [detection_threshold, max_objects, detect_interval]. With one object, a dancer who covers
+    # their face has the head split off as a second track that never makes it into the mask,
+    # so the original head stays in the frame. The masks of all tracks are merged.
+    only(nodes, "SAM3_VideoTrack")["widgets_values"][1] = sam_max_objects
     only(nodes, "PrimitiveStringMultiline")["widgets_values"][0] = prompt
     only(nodes, "PrimitiveFloat")["widgets_values"][0] = round(seconds, 2)
     # The one PrimitiveNode drives both ResolutionSelector aspect_ratio inputs.
@@ -184,6 +188,9 @@ def main() -> int:
     parser.add_argument("--duration", type=float, help="成片秒数，默认取原视频长度，最多 15")
     parser.add_argument("--aspect", choices=["auto", *ASPECTS], default="auto",
                         help="成片比例，默认取最接近原视频的")
+    parser.add_argument("--sam-max-objects", type=int, default=4,
+                        help="SAM 最多跟几个目标，遮罩取全部目标的并集；原画布是 1，"
+                             "舞者挡脸时头会被拆成另一个目标而漏掉。画面里有别人入镜时可调回 1")
     parser.add_argument("--seeds", help="逗号分隔的 seed，例如 101,102,103；每个 seed 出一条")
     parser.add_argument("--draws", type=int, default=1, help="不给 --seeds 时随机抽几条")
     parser.add_argument("--dry-run", action="store_true", help="CPU 检查：只转换并校验，不生成视频")
@@ -225,7 +232,7 @@ def main() -> int:
         json.loads(args.canvas.read_text(encoding="utf-8-sig")),
         video=video_name, image=image_name, target=args.target.strip(),
         prompt=args.prompt_file.read_text(encoding="utf-8"), seconds=seconds,
-        start_frames=round(args.start * 24), aspect=aspect,
+        start_frames=round(args.start * 24), aspect=aspect, sam_max_objects=args.sam_max_objects,
     )
     filled = work / "canvas.json"
     filled.write_text(json.dumps(canvas, ensure_ascii=False, indent=2), encoding="utf-8")
