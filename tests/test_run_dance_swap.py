@@ -71,6 +71,17 @@ class AspectTests(unittest.TestCase):
         self.assertEqual(run_dance_swap.nearest_aspect(2560, 1080), "21:9")
 
 
+class DurationTests(unittest.TestCase):
+    def test_full_length_clip_never_asks_for_more_frames_than_it_has(self) -> None:
+        frames = run_dance_swap.aligned_frames(15.03)
+        self.assertEqual(frames, 345)
+        self.assertLessEqual(frames, 15.03 * 24)
+        self.assertEqual((frames - 5) % 17, 0)
+
+    def test_grid_durations_are_kept(self) -> None:
+        self.assertEqual(run_dance_swap.aligned_frames(8.0), 192)
+
+
 class ApiNodeTests(unittest.TestCase):
     def test_finds_the_single_node_of_a_type(self) -> None:
         prompt = {"31": {"class_type": "RandomNoise"}, "42": {"class_type": "VHS_VideoCombine"}}

@@ -41,6 +41,11 @@ ASPECTS = {"1:1": 1.0, "2:3": 2 / 3, "3:2": 3 / 2, "3:4": 3 / 4, "4:3": 4 / 3,
            "9:16": 9 / 16, "16:9": 16 / 9, "21:9": 21 / 9}
 
 
+def aligned_frames(seconds: float) -> int:
+    """Largest H3 frame count (17k + 5 at 24 fps) that fits in this many seconds."""
+    return max(5, (int(seconds * 24) - 5) // 17 * 17 + 5)
+
+
 def nearest_aspect(width: int, height: int) -> str:
     """The canvas aspect closest to the source, so the centre crop removes as little as possible."""
     return min(ASPECTS, key=lambda name: abs(math.log(width / height / ASPECTS[name])))
@@ -199,7 +204,9 @@ def main() -> int:
 
     total, width, height = probe(args.video)
     available = total - args.start
-    seconds = min(args.duration or available, available, MAX_SECONDS)
+    # The canvas rounds its frame count up to the H3 grid (17k + 5 at 24 fps); asking for more
+    # frames than the source holds would leave the reference short, so snap down first.
+    seconds = aligned_frames(min(args.duration or available, available, MAX_SECONDS)) / 24
     if seconds < 2:
         raise SystemExit(f"原视频可用部分只有 {available:.1f} 秒，至少要 2 秒")
     aspect = args.aspect if args.aspect != "auto" else nearest_aspect(width, height)
