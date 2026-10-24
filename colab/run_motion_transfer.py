@@ -191,6 +191,8 @@ def main() -> int:
     bootstrap = [sys.executable, HERE / "bootstrap_colab.py", "--drive-root", args.drive_root,
                  "--profile", "ref2va", "--skip-models"]
     run(bootstrap + (["--prepare-on-cpu"] if args.dry_run else []))
+    # Before ComfyUI starts: the snapshot's Director calls ReferenceToVideo in the pre-bc5f880 order.
+    run([sys.executable, HERE / "patch_director.py"])
 
     total, source_w, source_h = probe(args.video)
     count, segment_seconds = plan_segments(total - args.start, args.duration, args.segments)
