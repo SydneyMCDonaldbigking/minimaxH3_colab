@@ -62,6 +62,7 @@ MODEL_FOLDERS = (
     "loras",
     "latent_upscale_models",
     "upscale_models",
+    "vae_approx",
 )
 
 

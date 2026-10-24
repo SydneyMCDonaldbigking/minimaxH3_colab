@@ -28,7 +28,8 @@ MyDrive/minimaxH3_colab/
 ├── models/
 │   ├── checkpoints/sam3.1_multiplex_fp16.safetensors
 │   ├── diffusion_models/fasth3_omniref_8step_pruned_int8_convrot.safetensors
-│   └── loras/h3_character_swap_v1.5.safetensors
+│   ├── loras/h3_character_swap_v1.5.safetensors
+│   └── vae_approx/taeh3.safetensors        # 舞蹈画布实时预览用；缺了主视频输出会被拒
 ├── runtime-cache/
 │   ├── private-source-fast-h3-dance-swap.zip
 │   └── runtime-py*-torch2110-cu130-comfybc5f880-s3.tar.gz
@@ -101,6 +102,34 @@ python colab/run_motion_transfer.py \
 - 成片、预处理后的参考视频、提示词和 `run.json` 存到 `MyDrive/minimaxH3_colab/deliveries/motion/<id>/`。
 - 加 `--dry-run` 可在 CPU 运行时上只生成 API prompt，并交给 ComfyUI 的 `validate_prompt` 校验，不生成视频；
   检查产物留在 `/content/h3-motion/<id>/check/`，不写进 Drive。
+
+## 转换与 CPU 校验
+
+[FastH3_DanceSwap_CPU_Check.ipynb](https://colab.research.google.com/github/SydneyMCDonaldbigking/minimaxH3_colab/blob/main/FastH3_DanceSwap_CPU_Check.ipynb)
+只用 CPU 运行时：把 VDN8 加速版画布转换成 FastH3 OmniRef，对照 Comfy 官方
+`video_fasth3_ominiref_r2v.json` 模板检查采样链，确认模型文件与 Character Swap LoRA
+的目标层都在，最后用固定版本 ComfyUI 自己的 `validate_prompt` 校验整张图（不执行、不加载大模型）。
+
+## 命令行换人（多 seed）
+
+`colab/run_dance_swap.py` 不开 ComfyUI 界面直接跑换人画布：把原视频、角色图、SAM 要换的人（英文描述）
+和 H3 提示词按节点类型填进画布，用 `colab/canvas_api.py` 转成 API prompt 并交给 `validate_prompt`
+校验，再每个 seed 跑一条，存到 `MyDrive/minimaxH3_colab/deliveries/dance_swap/<id>/<id>_s<seed>.mp4`。
+
+```bash
+python colab/run_dance_swap.py \
+  --video /content/drive/MyDrive/minimaxH3_colab/assets/dance_swap/<id>/dance.mp4 \
+  --image /content/drive/MyDrive/minimaxH3_colab/assets/dance_swap/<id>/character.png \
+  --target "the dancing girl on the right in a white T-shirt" \
+  --prompt-file /content/drive/MyDrive/minimaxH3_colab/assets/dance_swap/<id>/prompt.txt \
+  --job-id <id> --draws 3
+```
+
+- 成片比例默认取最接近原视频的（`--aspect` 可选 1:1、3:2、4:3、16:9、21:9 及竖版），时长默认取原视频长度，最多 15 秒。
+- 同一配置只换 seed 差异就很大，比较效果时每格至少 3 条；宿主机内存不足 80GB 时每条之间重启 ComfyUI。
+- SAM 默认最多跟 4 个目标（`--sam-max-objects`），遮罩取并集。原画布是 1：舞者用手挡脸时头会被拆成另一个目标，
+  遮罩漏掉头部，成片里那几秒原来的脸就留在画面上。画面里有别的人入镜时可调回 1。
+- 加 `--dry-run` 只在 CPU 上转换和校验，不生成视频。
 
 
 

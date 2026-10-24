@@ -29,6 +29,10 @@ class BootstrapColabTests(unittest.TestCase):
     def test_dance_swap_model_folders_include_sam_checkpoints(self) -> None:
         self.assertIn("checkpoints", bootstrap_colab.MODEL_FOLDERS)
 
+    def test_dance_swap_preview_decoder_folder_is_linked(self) -> None:
+        # ModelPreviewOverrideKJ lists tiny_vae from vae_approx; taeh3 missing there rejects the video output.
+        self.assertIn("vae_approx", bootstrap_colab.MODEL_FOLDERS)
+
     def test_dance_swap_plugins_are_pinned(self) -> None:
         names = {name for name, _url, _ref in bootstrap_colab.CUSTOM_NODE_REPOS}
         self.assertEqual(
