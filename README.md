@@ -133,6 +133,20 @@ python colab/run_dance_swap.py \
   用法是先给原片换场景，再拿换好的视频当原片，照常一个一个换人。
 - 加 `--dry-run` 只在 CPU 上转换和校验，不生成视频。
 
+## 成片超分
+
+`colab/run_upscale.py` 用私有仓库自带的 `scripts/cc_upscale.py`（和 5090 服务器每条成片后面那一步相同）：
+RealESRGAN x2 经导演台的 `H3DirectorVideoUpscale` 节点放大，音轨、帧率、时长不变；再用 ffmpeg 转到交付尺寸，最后做机器预审。
+交付高度默认 1080，宽度按成片自己的比例算。成片存到 `deliveries/upscale/<id>/<id>_<高度>p.mp4`。
+
+```bash
+python colab/run_upscale.py --video /content/drive/MyDrive/minimaxH3_colab/deliveries/dance_swap/<id>/<id>_s<seed>.mp4   --job-id <id>-final --height 1080
+```
+
+- 只在最后跑一次。每一遍换人开头都会把原片缩回约 100 万像素，中间放大了也白放大。
+- `--dry-run` 只生成并校验超分的 API prompt；`--cpu-test` 截 6 帧、缩到 320 宽，在 CPU 上把整条链路真跑一遍，
+  报告存到 `logs/upscale-cputest/<id>/`，不算交付。
+
 
 
 

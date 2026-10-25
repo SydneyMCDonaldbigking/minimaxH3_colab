@@ -92,7 +92,7 @@ def host_ram_gib() -> float:
     return 0.0
 
 
-def restart_comfy(drive_root: Path) -> None:
+def restart_comfy(drive_root: Path, cpu: bool = False) -> None:
     """Start a fresh ComfyUI so models cached by an earlier job do not pile up in host RAM."""
     pattern = "main.py --listen 127.0.0.1"
     subprocess.run(["pkill", "-f", pattern], check=False)
@@ -100,7 +100,8 @@ def restart_comfy(drive_root: Path) -> None:
         if subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode:
             break
         time.sleep(1)
-    run([sys.executable, HERE / "launch_colab.py", "--drive-root", drive_root, "--no-worker"])
+    run([sys.executable, HERE / "launch_colab.py", "--drive-root", drive_root, "--no-worker",
+         *(["--cpu"] if cpu else [])])
 
 
 def only(nodes: list[dict], kind: str, active: bool = True) -> dict:
