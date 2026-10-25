@@ -4,6 +4,8 @@
 The canvas keeps the source video and repaints one dancer: SAM 3.1 tracks the
 person named by --target, Character Swap V1.5 on FastH3 OmniRef redraws them as
 the character in --image, and the result is pasted back into the original frame.
+With --mask background the mask is flipped: the tracked people are kept and
+everything around them is repainted from --image (a location picture).
 
 Steps: restore the runtime from the Drive snapshot (dance_swap profile), copy
 the inputs into ComfyUI's input folder, fill them into the canvas by node type,
@@ -109,8 +111,39 @@ def only(nodes: list[dict], kind: str, active: bool = True) -> dict:
     return matches[0]
 
 
+def invert_mask(canvas: dict) -> None:
+    """Put an InvertMask between the SAM mask and MaskCleanup, so the background is repainted.
+
+    Before the cleanup rather than after it: the cleanup's grow then pushes the background a few
+    pixels into the people's edges, instead of leaving a rim of the old background around them.
+    """
+    nodes, links = canvas["nodes"], canvas["links"]
+    source, cleanup = only(nodes, "SAM3_TrackToMask"), only(nodes, "MVEx_MaskCleanup")
+    matches = [link for link in links if link[1] == source["id"] and link[3] == cleanup["id"]]
+    if len(matches) != 1:
+        raise SystemExit("SAM3_TrackToMask 没有直接连到 MVEx_MaskCleanup；这不是预期的换人画布")
+    link = matches[0]
+    node_id = max(node["id"] for node in nodes) + 1
+    out_link = max(item[0] for item in links) + 1
+    cleanup_slot = link[4]
+    link[3], link[4] = node_id, 0
+    links.append([out_link, node_id, 0, cleanup["id"], cleanup_slot, "MASK"])
+    cleanup["inputs"][cleanup_slot]["link"] = out_link
+    x, y = source.get("pos", [0, 0])
+    nodes.append({
+        "id": node_id, "type": "InvertMask", "title": "06｜遮罩反转：保留人物、重画背景",
+        "pos": [x, y + 120], "size": [240, 30], "flags": {}, "order": source.get("order", 0), "mode": 0,
+        "inputs": [{"name": "mask", "type": "MASK", "link": link[0]}],
+        "outputs": [{"name": "MASK", "type": "MASK", "links": [out_link], "slot_index": 0}],
+        "properties": {"Node name for S&R": "InvertMask"}, "widgets_values": [],
+    })
+    canvas["last_node_id"] = max(canvas.get("last_node_id", 0), node_id)
+    canvas["last_link_id"] = max(canvas.get("last_link_id", 0), out_link)
+
+
 def fill_canvas(canvas: dict, *, video: str, image: str, target: str, prompt: str,
-                seconds: float, start_frames: int, aspect: str, sam_max_objects: int = 4) -> dict:
+                seconds: float, start_frames: int, aspect: str, sam_max_objects: int = 4,
+                mask: str = "person") -> dict:
     """Write the job's inputs into the canvas, finding each node by its type."""
     nodes = canvas["nodes"]
     loader = only(nodes, "VHS_LoadVideo")
@@ -125,6 +158,8 @@ def fill_canvas(canvas: dict, *, video: str, image: str, target: str, prompt: st
     only(nodes, "PrimitiveFloat")["widgets_values"][0] = round(seconds, 2)
     # The one PrimitiveNode drives both ResolutionSelector aspect_ratio inputs.
     only(nodes, "PrimitiveNode")["widgets_values"][0] = aspect
+    if mask == "background":
+        invert_mask(canvas)
     return canvas
 
 
@@ -180,8 +215,12 @@ def main() -> int:
     parser.add_argument("--drive-root", type=Path, default=Path("/content/drive/MyDrive/minimaxH3_colab"))
     parser.add_argument("--canvas", type=Path, default=CANVAS, help="FastH3 OmniRef 换人画布 JSON")
     parser.add_argument("--video", type=Path, required=True, help="原舞蹈视频（单个连续镜头）")
-    parser.add_argument("--image", type=Path, required=True, help="新角色图")
-    parser.add_argument("--target", required=True, help="给 SAM 的英文描述：原视频里要换掉的是哪个人")
+    parser.add_argument("--image", type=Path, required=True, help="新角色图；--mask background 时是新场景图")
+    parser.add_argument("--target", required=True,
+                        help="给 SAM 的英文描述：原视频里要换掉的是哪个人；--mask background 时是要保留的人")
+    parser.add_argument("--mask", choices=["person", "background"], default="person",
+                        help="person：重画 --target 选中的人（默认）；background：反转遮罩，"
+                             "保留 --target 选中的人，重画他们周围的背景")
     parser.add_argument("--prompt-file", type=Path, required=True, help="H3 提示词（新角色的 subject_definitions 等）")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--start", type=float, default=0.0, help="从原视频第几秒开始")
@@ -233,6 +272,7 @@ def main() -> int:
         video=video_name, image=image_name, target=args.target.strip(),
         prompt=args.prompt_file.read_text(encoding="utf-8"), seconds=seconds,
         start_frames=round(args.start * 24), aspect=aspect, sam_max_objects=args.sam_max_objects,
+        mask=args.mask,
     )
     filled = work / "canvas.json"
     filled.write_text(json.dumps(canvas, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -245,7 +285,7 @@ def main() -> int:
 
     seeds = parse_seeds(args.seeds, args.draws)
     summary = {"job_id": args.job_id, "seconds": round(seconds, 2), "aspect": aspect,
-               "target": args.target, "dry_run": args.dry_run, "out_dir": str(out_dir),
+               "target": args.target, "mask": args.mask, "start": args.start, "dry_run": args.dry_run, "out_dir": str(out_dir),
                "validation_ok": report["all_ok"], "seeds": [] if args.dry_run else seeds, "draws": []}
     if not report["all_ok"]:
         print(json.dumps(report["validate_prompt"]["node_errors"], ensure_ascii=False, indent=2))
