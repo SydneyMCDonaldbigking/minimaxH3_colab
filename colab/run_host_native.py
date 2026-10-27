@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -43,6 +44,18 @@ def unpack(archive: Path, dest: Path) -> None:
             if target != root and root not in target.parents:
                 raise SystemExit(f"流水线压缩包里有越界路径：{member.name}")
         bundle.extractall(dest)
+
+
+def sage_installed() -> bool:
+    probe = "import importlib.util, sys; sys.exit(importlib.util.find_spec('sageattention') is None)"
+    return subprocess.run([str(RUNTIME_PYTHON), "-c", probe]).returncode == 0
+
+
+def without_sage(config: dict) -> dict:
+    """bootstrap skips the generic SageAttention wheel on Blackwell, and KJNodes' "auto" then
+    fails with "No module named 'sageattention'"; the motion route disables it the same way."""
+    config.setdefault("generation", {})["sage_attention"] = "disabled"
+    return config
 
 
 def validation_summary(report: Path) -> dict:
@@ -81,6 +94,12 @@ def main() -> int:
     # The runtime's Colab config (Drive paths, RAM-safe upscale batches) fits the dub branch too:
     # that branch added job fields, not config keys.
     shutil.copy2(RUNTIME_SOURCE / COLAB_CONFIG, PIPELINE / COLAB_CONFIG)
+    if not sage_installed():
+        import yaml  # Colab's system Python has PyYAML; bootstrap_colab.py relies on it too
+
+        config = PIPELINE / COLAB_CONFIG
+        config.write_text(yaml.safe_dump(without_sage(yaml.safe_load(config.read_text(encoding="utf-8"))),
+                                         allow_unicode=True, sort_keys=False), encoding="utf-8")
 
     out_dir = (Path("/content/h3-host-native") / args.id / "check" if args.dry_run
                else args.drive_root / "deliveries" / "host-native" / args.id)

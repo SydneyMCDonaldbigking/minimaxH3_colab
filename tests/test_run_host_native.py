@@ -49,6 +49,14 @@ class UnpackTests(unittest.TestCase):
             self.assertFalse((tmp / "escape.py").exists())
 
 
+class SageTests(unittest.TestCase):
+    def test_sage_is_disabled_and_the_rest_kept(self) -> None:
+        config = {"generation": {"sage_attention": "auto", "steps": 4}, "comfy": {"base_url": "x"}}
+        out = run_host_native.without_sage(config)
+        self.assertEqual(out["generation"], {"sage_attention": "disabled", "steps": 4})
+        self.assertEqual(out["comfy"], {"base_url": "x"})
+
+
 class ValidationSummaryTests(unittest.TestCase):
     def test_reads_the_summary_validate_api_prompt_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
