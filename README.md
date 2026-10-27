@@ -131,6 +131,19 @@ python colab/run_dance_swap.py \
   遮罩漏掉头部，成片里那几秒原来的脸就留在画面上。画面里有别的人入镜时可调回 1。
 - 加 `--dry-run` 只在 CPU 上转换和校验，不生成视频。
 
+## 主播口播（原尺寸一次成片）
+
+`colab/run_host_native.py` 在 Colab 上跑 ai_hosting 的 `scripts/gpu/h3_host_native.py`：768x1344 直接用 Ref2VA 原版权重
+采 20 步（turbo LoRA 强度 0），配音以 `dub_mode: copy` 当原声，不二采、不超分。它要的 h3-dub 流水线
+（comfyui_quick_workflow 的 `feat/ref2va-voice-audio`，只改了 `src/`）是私有的，所以用 Drive 里
+`pipelines/h3-dub-<commit>.tar.gz`（`git archive <commit> src config scripts`）解到 `/content/h3-dub`；
+ComfyUI 和导演台用运行时自己的。肖像、配音、提示词和脚本放在 `assets/host-native/`，成片在 `deliveries/host-native/<id>/`。
+
+```bash
+python colab/run_host_native.py --id host-dub-01 --seed 101           # G4
+python colab/run_host_native.py --id host-dub-01 --seed 101 --dry-run # CPU：只生成图并校验
+```
+
 
 
 
