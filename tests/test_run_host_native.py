@@ -49,5 +49,14 @@ class UnpackTests(unittest.TestCase):
             self.assertFalse((tmp / "escape.py").exists())
 
 
+class ValidationSummaryTests(unittest.TestCase):
+    def test_reads_the_summary_validate_api_prompt_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "validation.json"
+            report.write_text('{"summary": {"all_ok": true, "outputs_passed": "1/1"}, "node_errors": {}}',
+                              encoding="utf-8")
+            self.assertTrue(run_host_native.validation_summary(report)["all_ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

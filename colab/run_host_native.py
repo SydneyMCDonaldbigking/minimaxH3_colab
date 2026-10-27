@@ -45,6 +45,11 @@ def unpack(archive: Path, dest: Path) -> None:
         bundle.extractall(dest)
 
 
+def validation_summary(report: Path) -> dict:
+    """validate_api_prompt.py writes {"summary": {...all_ok...}, "node_errors": {...}}."""
+    return json.loads(report.read_text(encoding="utf-8"))["summary"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="主播口播：原尺寸一次成片，配音当原声，不二采不超分")
     parser.add_argument("--drive-root", type=Path, default=Path("/content/drive/MyDrive/minimaxH3_colab"))
@@ -89,7 +94,7 @@ def main() -> int:
         run([*cmd, "--dry-run"])
         api, report = out_dir / f"{args.id}.api.json", out_dir / "validation.json"
         run([RUNTIME_PYTHON, HERE / "validate_api_prompt.py", api, report], cwd=COMFY)
-        result = json.loads(report.read_text(encoding="utf-8"))
+        result = validation_summary(report)
         if not result["all_ok"]:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         print(json.dumps({"id": args.id, "dry_run": True, "validation_ok": result["all_ok"]}, ensure_ascii=False))
