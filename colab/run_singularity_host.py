@@ -113,6 +113,15 @@ def fill_canvas(canvas: dict, *, image: str, audio: str, prompt: str, seconds: f
         if node["type"] == "VHS_VideoCombine":
             stage = "face" if node["id"] == 270 else "raw"
             node["widgets_values"]["filename_prefix"] = f"{prefix}_{stage}"
+    for node in nodes:
+        # The RunningHub export also saves widgets_values_named, in widget order, and canvas_api
+        # checks the conversion against it.  Rebuild it from the filled values, else every filled
+        # node looks misordered; its control_after_generate entry is a frontend control, not an
+        # input (a dropped trailing widget, like SelfLift's upscaler_unload, falls off the zip).
+        named = node.get("widgets_values_named")
+        if isinstance(named, dict) and isinstance(node.get("widgets_values"), list):
+            node["widgets_values_named"] = {key: value for key, value in zip(named, node["widgets_values"])
+                                            if key != "control_after_generate"}
     return canvas
 
 
@@ -182,7 +191,10 @@ def main() -> int:
     summary = {"id": args.id, "seed": args.seed, "megapixels": args.megapixels, "audio_start": args.audio_start,
                "seconds": round(seconds, 3), "validation_ok": report["all_ok"], "dry_run": args.dry_run}
     if not report["all_ok"]:
-        print(json.dumps(report, ensure_ascii=False, indent=2)[:8000])
+        problems = [check for check in report.get("widget_checks", []) if not check.get("ok")]
+        print(json.dumps({"missing": report.get("missing_node_types"), "widget_problems": problems,
+                          "node_errors": report.get("validate_prompt", {}).get("node_errors")},
+                         ensure_ascii=False, indent=1, default=str)[:20000])
     if args.dry_run or not report["all_ok"]:
         print(json.dumps(summary, ensure_ascii=False))
         return 0 if report["all_ok"] else 1

@@ -53,6 +53,23 @@ class FillCanvasTests(unittest.TestCase):
         self.assertEqual(values[0], 101)
         self.assertEqual(values[1:], [ "fixed", 1, 4, 0.4, 0, 0.5, 1, "upscaler.safetensors", False])
 
+    def test_named_widget_copies_follow_the_filled_values(self) -> None:
+        raw = canvas()
+        nodes = {node["id"]: node for node in raw["nodes"]}
+        nodes[214]["widgets_values_named"] = {"image": "old.png", "upload": "image"}
+        nodes[233]["widgets_values_named"] = {
+            "seed": 5, "control_after_generate": "randomize", "cfg": 1, "transition_step": 4, "lowres_scale": 0.4,
+            "rho": 0, "w_min": 0.5, "w_max": 1, "upscaler_model": "v2.pth", "highres_tiling": False,
+            "upscaler_unload": True}
+        filled = {node["id"]: node for node in run_singularity_host.fill_canvas(
+            raw, image="new.png", audio="a.wav", prompt="p", seconds=5, seed=101, megapixels=1.5,
+            prefix="x")["nodes"]}
+        self.assertEqual(filled[214]["widgets_values_named"], {"image": "new.png", "upload": "image"})
+        self.assertEqual(filled[233]["widgets_values_named"], {
+            "seed": 101, "cfg": 1, "transition_step": 4, "lowres_scale": 0.4, "rho": 0, "w_min": 0.5,
+            "w_max": 1, "upscaler_model": "upscaler.safetensors", "highres_tiling": False})
+        self.assertNotIn("widgets_values_named", filled[2])  # nodes without one are left alone
+
     def test_each_saved_clip_gets_its_own_prefix(self) -> None:
         nodes = self.fill()
         self.assertEqual(nodes[243]["widgets_values"]["filename_prefix"], "host-singularity/host_raw")
