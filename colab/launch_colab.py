@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--content-root", default="/content")
     parser.add_argument("--port", type=int, default=8188)
     parser.add_argument("--no-worker", action="store_true")
+    parser.add_argument("--cpu", action="store_true", help="ComfyUI 跑在 CPU 上，只用于 CPU 运行时的流程测试")
     args = parser.parse_args()
 
     content = Path(args.content_root)
@@ -48,7 +49,8 @@ def main() -> int:
     if not healthy(base_url + "/system_stats"):
         comfy_log = (logs / "comfyui.log").open("ab", buffering=0)
         process = subprocess.Popen(
-            [str(runtime_python), "main.py", "--listen", "127.0.0.1", "--port", str(args.port)],
+            [str(runtime_python), "main.py", "--listen", "127.0.0.1", "--port", str(args.port),
+             *(["--cpu"] if args.cpu else [])],
             cwd=comfy,
             env=env,
             stdout=comfy_log,

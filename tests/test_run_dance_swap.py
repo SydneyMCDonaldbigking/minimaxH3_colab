@@ -26,7 +26,16 @@ def canvas() -> dict:
         {"id": 17, "type": "PrimitiveFloat", "mode": 0, "widgets_values": [10]},
         {"id": 44, "type": "PrimitiveNode", "mode": 0, "widgets_values": ["16:9 (Widescreen)", "fixed", ""]},
         {"id": 53, "type": "SAM3_VideoTrack", "mode": 0, "widgets_values": [0.5, 1, 1]},
-    ]}
+        {"id": 55, "type": "SAM3_TrackToMask", "mode": 0, "pos": [100, 200],
+         "outputs": [{"name": "masks", "type": "MASK", "links": [70]}]},
+        {"id": 56, "type": "MVEx_MaskCleanup", "mode": 0,
+         "inputs": [{"name": "mask", "type": "MASK", "link": 70}],
+         "outputs": [{"name": "mask", "type": "MASK", "links": [71]}]},
+        {"id": 123, "type": "MVEx_SubjectCrop", "mode": 0,
+         "inputs": [{"name": "images", "type": "IMAGE", "link": None},
+                    {"name": "masks", "type": "MASK", "link": 71}]},
+    ], "links": [[70, 55, 0, 56, 0, "MASK"], [71, 56, 0, 123, 1, "MASK"]],
+       "last_node_id": 126, "last_link_id": 71}
 
 
 class FillCanvasTests(unittest.TestCase):
@@ -58,6 +67,27 @@ class FillCanvasTests(unittest.TestCase):
 
     def test_bypassed_scene_image_is_left_alone(self) -> None:
         self.assertEqual(self.by_id(self.fill())[126]["widgets_values"][0], "scene_reference.png")
+
+    def test_person_mask_leaves_the_wiring_alone(self) -> None:
+        filled = self.fill()
+        self.assertEqual(filled["links"], canvas()["links"])
+        self.assertNotIn("InvertMask", [node["type"] for node in filled["nodes"]])
+
+    def test_background_mask_inverts_before_cleanup(self) -> None:
+        filled = run_dance_swap.fill_canvas(
+            canvas(), video="v", image="scene.png", target="person", prompt="p", seconds=5,
+            start_frames=0, aspect="16:9", mask="background")
+        nodes = self.by_id(filled)
+        invert = next(node for node in filled["nodes"] if node["type"] == "InvertMask")
+        self.assertEqual(invert["id"], 127)  # above every existing id
+        links = {link[0]: link for link in filled["links"]}
+        into_invert = links[invert["inputs"][0]["link"]]
+        self.assertEqual(into_invert[1:5], [55, 0, 127, 0])
+        into_cleanup = links[nodes[56]["inputs"][0]["link"]]
+        self.assertEqual(into_cleanup[1:6], [127, 0, 56, 0, "MASK"])
+        self.assertEqual(invert["outputs"][0]["links"], [into_cleanup[0]])
+        self.assertEqual(links[71][1:5], [56, 0, 123, 1])  # cleanup still feeds the crop
+        self.assertEqual((filled["last_node_id"], filled["last_link_id"]), (127, 72))
 
     def test_unexpected_canvas_is_refused(self) -> None:
         broken = canvas()
